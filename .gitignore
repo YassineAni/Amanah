@@ -1,0 +1,27 @@
+
+# Dependencies and builds
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data and uploads
+server/data.json
+server/files/
+server/audio/uploads/
+server/audio/tts/
+
+# Local tooling and logs
+.codex/
+.cursor/
+.DS_Store
+Thumbs.db
+*.log

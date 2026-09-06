@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap');
+@import 'tailwindcss';
+
+:root { --background: 166 28% 88%; --foreground: 199 32% 21%; --card: 165 35% 96%; --card-foreground: 199 32% 21%; --border: 188 22% 60%; --primary: 195 37% 28%; --primary-foreground: 48 35% 95%; --secondary: 69 37% 87%; --secondary-foreground: 199 32% 21%; --muted: 171 21% 82%; --muted-foreground: 192 20% 38%; --accent: 45 52% 86%; --accent-foreground: 199 32% 21%; --destructive: 4 48% 43%; --destructive-foreground: 40 50% 96%; --input: 188 22% 60%; --ring: 192 38% 39%; --popover: 165 35% 96%; --popover-foreground: 199 32% 21%; --radius: 1.4rem; --app-font-sans: 'DM Sans', sans-serif; --app-font-serif: 'Fraunces', Georgia, serif; --app-font-mono: 'DM Mono', monospace; }
+.dark { --background: 196 28% 16%; --foreground: 166 35% 92%; --card: 195 26% 21%; --card-foreground: 166 35% 92%; --border: 188 20% 38%; --primary: 166 30% 79%; --primary-foreground: 199 32% 21%; --secondary: 194 20% 26%; --secondary-foreground: 166 35% 92%; --muted: 194 18% 26%; --muted-foreground: 174 18% 70%; --accent: 45 30% 28%; --accent-foreground: 166 35% 92%; --destructive: 5 55% 55%; --destructive-foreground: 0 0% 100%; --input: 188 20% 38%; --ring: 166 30% 79%; --popover: 195 26% 21%; --popover-foreground: 166 35% 92%; }
+*{box-sizing:border-box} body{margin:0;background:hsl(var(--background));color:hsl(var(--foreground));font-family:var(--app-font-sans)} button,input,select{font:inherit} button{cursor:pointer} button:focus-visible,a:focus-visible{outline:3px solid #547e80;outline-offset:3px}.serif{font-family:var(--app-font-serif)} .glass{background:rgba(255,255,255,.36);border:1px solid rgba(255,255,255,.74);box-shadow:inset 0 1px 1px rgba(255,255,255,.9),0 18px 48px rgba(46,84,91,.10);backdrop-filter:blur(16px)} .ocean:before,.ocean:after{content:"";position:fixed;z-index:-1;border-radius:50%;filter:blur(70px);pointer-events:none}.ocean:before{width:39rem;height:39rem;left:-19rem;top:-10rem;background:#afdaddaa}.ocean:after{width:35rem;height:35rem;right:-16rem;bottom:-16rem;background:#f4e9c7bb}@keyframes breathe{50%{transform:scale(1.07);opacity:.72}}.breathe{animation:breathe 3s ease-in-out infinite}
+/* scan-clear confirmation */
+@keyframes scanPop{0%{transform:scale(.5);opacity:0}55%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+@keyframes scanDraw{to{stroke-dashoffset:0}}
+@keyframes scanRing{0%{stroke-dashoffset:88}100%{stroke-dashoffset:0}}
+.scan-ok{animation:scanPop .4s ease-out both}
+.scan-ok .ring{stroke-dasharray:88;stroke-dashoffset:88;animation:scanRing .5s ease-out forwards}
+.scan-ok .tick{stroke-dasharray:30;stroke-dashoffset:30;animation:scanDraw .35s .28s ease-out forwards}
+.scan-fade{animation:scanPop .4s ease-out both}
+@keyframes popover{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+.popover-in{animation:popover .16s ease-out both}
+.loupe-on,.loupe-on *{cursor:none!important}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;scroll-behavior:auto!important}}
