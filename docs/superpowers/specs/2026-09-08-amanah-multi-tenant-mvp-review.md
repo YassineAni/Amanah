@@ -202,3 +202,41 @@ All three reviews flagged the "In" list (~18 items, **6–8 weeks solo**) as too
 1. **You decide:** (a) the scope cuts above — take my recommendation, or adjust; (b) adding a lightweight pre-pilot privacy assessment as a gated scope item (S1).
 2. I apply C1–C10 and S1–S14 to the spec, re-run the self-review loop, and bring the revised spec back for your approval.
 3. On approval, `superpowers:writing-plans` turns it into the 1a → 1b → 1c implementation plan. No implementation code before then.
+
+---
+
+## Revision 2 — resolution (2026-09-08)
+
+**Decisions taken:** (a) recommended scope cut applied — clinical files, the automated correlation callout, the circle-switcher UI, password auth, and French UI are deferred to Phase 2; the multi-elder schema stays. (b) The lightweight pre-pilot privacy assessment is added as a hard gate.
+
+**All findings actioned in the spec:**
+
+| Finding | Where in revision 2 |
+|---|---|
+| C1 check-in boundary | §4 `checkin_content` table; §5 single combined SELECT policy; D12 |
+| C2 PostgREST bypass | §3 REVOKE + pinned schema + test; §5 "Closing the direct-PostgREST path"; D13 |
+| C3 claims mechanism | §3 `withUserTxn` (bound `$1`, direct connection, `DISCARD ALL`, `TO app_authenticated`); D20 |
+| C4 helper ownership | §5 helpers owned by a BYPASSRLS role, `STABLE`; D14 |
+| C5 membership ≠ circle scope | §5 statement; §7 per-handler `circle_id = :cid`; §8 `weekStrip(circleId)` assert; §11 multi-circle fixture + attack case |
+| C6 permissive OR-combine | §5 "exactly one SELECT policy" for visibility tables |
+| C7 column immutability + integrity | §5 trigger subsection; §4 `completions` composite FK + `routine_items UNIQUE (id, circle_id)` |
+| C8 `organizations` locks out staff | §5 `organizations` SELECT policy with the `EXISTS` clause |
+| C9 last-coordinator guard | §5 trigger + `SELECT … FOR UPDATE`; D15 |
+| C10 `audio_path` binding | §7/§9 staging-path prefix check + move; `checkin_content.audio_path` CHECK |
+| S1 Law 25 posture | §12 rewrite; D10 reworded; D19 |
+| S2 elder consent lifecycle | §6 privacy-notice accept + attestation; §12 withdrawal path; D8 reworded; §5 elder visibility-PATCH limit |
+| S3 invite races | §6 compare-and-swap + re-invite; §4 partial uniques |
+| S4 invite-preview PII | §6/§7 no email in response, IP-throttled |
+| S5 TTS | §7 authed, per-user throttle, out of Public |
+| S6 `GET /today` | §7 circle-scoped `GET /today` |
+| S7 storage orphans | §9 staging + nightly sweeper; §7 circle-delete Storage cleanup + integration test |
+| S8 `handle_new_user` | §4 `full_name` coalesce/truncate; §11 test |
+| S9 `POST /api/circles` | §6 one transaction, tz validation, org cap, ownership as-user |
+| S10 `weekdayOf` | §8 stays pure; `effective_from` on `routine_items`; DST test days |
+| S11 schema gaps | §4 indexes, `ON DELETE` per column, enum array, CHECKs, consent columns, consistency trigger |
+| S12 missing endpoints + ops | §7 `POST`/`DELETE /shifts`, `DELETE /api/circles/:cid`; D18 email; §10 backup owner + restore test + audio bucket |
+| S13 frontend design | §13 wiring-map constraint |
+| S14 test plan | §11 expanded (bypass paths, write matrix, migration idempotency, `EXPLAIN`) |
+| Nice-to-haves | `updated_at` (§4), `STABLE` helpers (§5), stable sort (§8), per-check-in `spoken_lang` (§4/§7/§8), `demoUtteranceId` verifies `is_demo` (§7/§8), threat-model boundary (§3/§15), **§16 Pilot acceptance criteria** |
+
+Revised spec: `2026-09-08-amanah-multi-tenant-mvp-design.md` revision 2. Awaiting approval before `superpowers:writing-plans`.
