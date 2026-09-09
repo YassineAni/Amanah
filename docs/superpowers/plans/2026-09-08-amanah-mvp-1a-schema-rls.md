@@ -1410,19 +1410,37 @@ export async function rawNoClaims(): Promise<Client> {
   return c;
 }
 
+// Cache: userId -> email. Looked up ONCE via an admin (BYPASSRLS) connection —
+// never on the RLS-subject connection, where a pre-claims profiles read would
+// return nothing and the minted claims would carry a sentinel email.
+const emailCache = new Map<string, string>();
+async function emailFor(userId: string): Promise<string> {
+  const hit = emailCache.get(userId);
+  if (hit) return hit;
+  const a = new Client({ connectionString: ADMIN_URL });
+  await a.connect();
+  try {
+    const r = await a.query<{ email: string }>(
+      "select email::text as email from public.profiles where id = $1", [userId],
+    );
+    const email = r.rows[0]?.email ?? "unknown@example.com";
+    emailCache.set(userId, email);
+    return email;
+  } finally {
+    await a.end();
+  }
+}
+
 async function withClaims<T>(
   userId: string, fn: (c: Client) => Promise<T>, finish: "rollback" | "commit",
 ): Promise<T> {
+  const email = await emailFor(userId);
   const c = new Client({ connectionString: APP_URL });
   await c.connect();
   try {
-    const em = await c.query<{ email: string }>(
-      "select email from public.profiles where id = $1",
-      [userId],
-    ).catch(() => ({ rows: [{ email: "unknown@example.com" }] }));
     await c.query("begin");
     await c.query("select set_config('request.jwt.claims', $1, true)", [
-      JSON.stringify({ sub: userId, role: "authenticated", email: em.rows[0]?.email ?? "unknown@example.com" }),
+      JSON.stringify({ sub: userId, role: "authenticated", email }),
     ]);
     const out = await fn(c);
     await c.query(finish);
