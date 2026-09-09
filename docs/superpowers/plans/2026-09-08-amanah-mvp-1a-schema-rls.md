@@ -1962,13 +1962,22 @@ let fx: Fixture;
 beforeEach(async () => { fx = await loadFixture(); });
 
 describe("last-coordinator / owner guard", () => {
-  test("removing the only coordinator is rejected", async () => {
+  // circleA2 has exactly two coordinators (A2_coordinator, twoCircle) and
+  // NEITHER is the orgA owner — so this exercises the last-coordinator branch,
+  // not the owner branch. (circleA1's coordinator IS the owner, which raises on
+  // the owner branch first — see the next test.)
+  test("removing the last coordinator is rejected", async () => {
     const c = admin(); await c.connect();
     try {
+      await c.query(
+        `update public.circle_members set removed_at = now()
+         where circle_id = $1 and user_id = $2`,
+        [fx.circleA2, fx.users.twoCircle],
+      );
       await expect(c.query(
         `update public.circle_members set removed_at = now()
          where circle_id = $1 and user_id = $2`,
-        [fx.circleA1, fx.users.A1_coordinator],
+        [fx.circleA2, fx.users.A2_coordinator],
       )).rejects.toThrow(/last coordinator/i);
     } finally { await c.end(); }
   });
@@ -1990,29 +1999,29 @@ describe("last-coordinator / owner guard", () => {
     } finally { await c.end(); }
   });
 
-  test("two concurrent self-removals cannot both succeed", async () => {
-    const c0 = admin(); await c0.connect();
-    await c0.query(`insert into public.circle_members (circle_id,user_id,role)
-      values ($1,$2,'coordinator'),($1,$3,'coordinator')`,
-      [fx.circleA1, fx.users.twoCircle, fx.users.A2_coordinator]);
-    // now 3 coordinators: A1_coordinator (owner), twoCircle, A2_coordinator
-    await c0.end();
-
+  test("the FOR UPDATE lock serialises two concurrent last-two-coordinator removals", async () => {
+    // circleA2's two coordinators (A2_coordinator, twoCircle), neither the owner.
+    // Without the SELECT circles FOR UPDATE lock both txns would see "2
+    // coordinators, removing me leaves 1" and both commit -> 0 coordinators.
+    // With the lock: A wins, B blocks, B re-evaluates against A's committed
+    // state -> "removing me leaves 0" -> B RAISES. Exactly one survives.
     const a = admin(), b = admin();
     await a.connect(); await b.connect();
     try {
       await a.query("begin"); await b.query("begin");
       await a.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA1, fx.users.twoCircle]);
-      // b blocks on the FOR UPDATE lock until a commits
+        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.A2_coordinator]);
+      // B's UPDATE blocks at the trigger's SELECT circles ... FOR UPDATE until A commits.
       const bPromise = b.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA1, fx.users.A2_coordinator]);
+        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.twoCircle]);
+      // prove B is actually waiting: race it against a short timer.
+      const timer = new Promise((res) => setTimeout(() => res("blocked"), 400));
+      expect(await Promise.race([bPromise.then(() => "ran"), timer])).toBe("blocked");
       await a.query("commit");
-      await bPromise;                     // now sees 2 coordinators, still ok
-      await b.query("commit");
-      // one more removal must now fail (only the owner left)
+      await expect(bPromise).rejects.toThrow(/last coordinator/i);
+      await b.query("rollback");
       const check = await a.query(`select count(*)::int n from public.circle_members
-        where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA1]);
+        where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA2]);
       expect(check.rows[0].n).toBe(1);
     } finally { await a.end(); await b.end(); }
   });
