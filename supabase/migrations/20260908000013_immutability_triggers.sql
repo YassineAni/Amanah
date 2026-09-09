@@ -40,6 +40,24 @@ end $$;
 create trigger freeze_completions before update on public.completions for each row execute function app.freeze_authored_by();
 create trigger freeze_adhoc       before update on public.adhoc_tasks for each row execute function app.freeze_authored_by();
 
+-- A saved check-in's UPDATE may change visibility ONLY. (spec §5) ---------
+create or replace function app.checkins_column_scope()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  if (select auth.uid()) is null then
+    return new;
+  end if;
+  if new.mood is distinct from old.mood
+     or new.occurred_on is distinct from old.occurred_on
+     or new.spoken_lang is distinct from old.spoken_lang
+     or new.created_via is distinct from old.created_via then
+    raise exception 'only visibility may change on a saved check-in';
+  end if;
+  return new;
+end $$;
+create trigger checkins_column_scope before update on public.checkins
+  for each row execute function app.checkins_column_scope();
+
 -- checkin_content: copy the denormalized columns from the parent at insert,
 -- freeze them on update EXCEPT visibility, which tracks a parent change. --
 create or replace function app.checkin_content_denorm()
@@ -56,6 +74,9 @@ begin
     new.recorded_by := parent.recorded_by;
     new.is_proxy    := parent.is_proxy;
   else
+    if new.checkin_id is distinct from old.checkin_id then
+      raise exception 'checkin_id is immutable on checkin_content';
+    end if;
     if new.circle_id is distinct from old.circle_id
        or new.recorded_by is distinct from old.recorded_by
        or new.is_proxy is distinct from old.is_proxy then
@@ -118,7 +139,7 @@ create trigger circle_members_column_scope before update on public.circle_member
 
 -- circles.elder_user_id must match the active elder membership. ----------
 create or replace function app.assert_elder_consistency()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 declare elder_membership uuid;
 begin
   select m.user_id into elder_membership
