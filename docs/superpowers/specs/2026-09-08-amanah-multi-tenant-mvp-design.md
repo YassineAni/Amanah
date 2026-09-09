@@ -286,10 +286,20 @@ with `checkins`.
 | column | type | notes |
 |---|---|---|
 | `checkin_id` | uuid pk → checkins(id) on delete cascade | |
-| `circle_id` | uuid not null → circles(id) on delete cascade | denormalized so the tier policy needs no join; **immutable**; a trigger keeps it equal to `checkins.circle_id` |
+| `circle_id` | uuid not null → circles(id) on delete cascade | **immutable** |
+| `visibility` | checkin_visibility not null | **denormalized, immutable** |
+| `recorded_by` | uuid not null → profiles(id) | **denormalized, immutable** |
+| `is_proxy` | boolean not null | **denormalized, immutable** |
 | `transcript` | text not null default `''` | |
 | `translation` | text not null default `''` | |
 | `audio_path` | text | object path in the `audio` bucket; `check (audio_path is null or audio_path like circle_id::text || '/%')` |
+
+The four denormalized columns (`circle_id`, `visibility`, `recorded_by`,
+`is_proxy`) are copied from the parent `checkins` row at insert by a trigger and
+frozen thereafter. A `PATCH /checkins/:id` that changes `visibility` updates both
+rows in one statement pair. This keeps the tier `SELECT` policy self-contained —
+it never subqueries `checkins` and so never evaluates a second table's RLS per
+row.
 
 **`shifts`**
 
@@ -435,8 +445,8 @@ A row is visible (words + audio) when the member is in the circle **and**:
 | `coordinator` | `app.circle_role(circle_id) = 'coordinator'` OR `recorded_by = auth.uid()` |
 | `mood_only` | `recorded_by = auth.uid()` only |
 
-(`recorded_by` and `visibility` are read from the joined `checkins` row inside the
-policy, or denormalized onto `checkin_content` if the planner needs it.)
+(`recorded_by`, `visibility`, `is_proxy` are the denormalized immutable columns on
+`checkin_content` itself — the policy never touches `checkins`.)
 
 Notes:
 - The elder is `recorded_by` on her own check-ins, so she always gets the full
@@ -473,7 +483,9 @@ Notes:
   checked_out_at}`.
 - An update to `circle_members` by a coordinator may touch only `{removed_at}`
   (no `role` escalation, no `is_family_member` flip).
-- `checkin_content.circle_id` always equals `checkins.circle_id`.
+- `checkin_content`'s denormalized `circle_id` / `visibility` / `recorded_by` /
+  `is_proxy` are copied from `checkins` at insert and frozen; a `PATCH` of
+  `visibility` writes both rows together.
 - `circles.elder_user_id` and the `circle_members` `elder` row stay consistent.
 
 ### Last-coordinator / owner guard (trigger + row lock — C9)
@@ -598,6 +610,8 @@ single-tenant `GET /api/today` (replaced by the circle-scoped one below); all
 ### Circle-scoped — all under `/api/circles/:cid` (each also filters `circle_id = :cid`)
 
 - `GET /members`
+- `GET /demo/utterances` → `[{ id, label }]` — demo circles only (verified against
+  `circles.is_demo`); the seeded utterance list the demo check-in flow picks from
 - `GET /today` → `{ today, has_checkin, last_mood }` — the cheap elder-home query
 - `GET /checkins` — `checkins` LEFT JOIN `checkin_content` (words/audio present
   only where the tier policy admits the viewer)
