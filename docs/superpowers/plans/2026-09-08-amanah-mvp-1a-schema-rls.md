@@ -1187,7 +1187,7 @@ declare elder_membership uuid;
 begin
   select m.user_id into elder_membership
   from public.circle_members m
-  where m.circle_id = coalesce(new.circle_id, old.circle_id)
+  where m.circle_id = coalesce(new.id, old.id)   -- this trigger is on public.circles; its PK is `id`
     and m.role = 'elder' and m.removed_at is null
   limit 1;
   -- resolve which row we are validating
