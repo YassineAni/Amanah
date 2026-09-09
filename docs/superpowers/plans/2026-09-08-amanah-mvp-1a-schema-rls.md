@@ -1981,9 +1981,11 @@ describe("immutability", () => {
 });
 
 describe("handle_new_user full_name", () => {
+  // full_name falls back to the email local-part (no '@') when metadata is
+  // absent or blank, is truncated to 120 chars, and is otherwise stored verbatim.
   const cases: [string, unknown, RegExp][] = [
-    ["absent", undefined, /^new user$/],
-    ["empty", "", /@/],           // falls back to email local-part
+    ["absent", undefined, /^new-user-absent$/],
+    ["empty", "", /^new-user-empty$/],
     ["huge", "x".repeat(10_000), /^x{120}$/],
     ["script", "<script>alert(1)</script>", /script/],  // stored literally, bounded
   ];
@@ -2087,10 +2089,12 @@ describe("the browser cannot reach data through PostgREST", () => {
 });
 
 describe("migrations are idempotent", () => {
+  // db reset re-applies every migration; two runs prove no migration breaks on
+  // a non-empty DB. Each run is ~15-30s, so this test needs a longer timeout.
   test("db reset twice in a row succeeds", () => {
     execFileSync("npx", ["supabase", "db", "reset"], { stdio: "pipe" });
     execFileSync("npx", ["supabase", "db", "reset"], { stdio: "pipe" });
-  });
+  }, 180_000);
 });
 ```
 
