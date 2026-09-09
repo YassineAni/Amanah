@@ -42,7 +42,7 @@ create trigger freeze_adhoc       before update on public.adhoc_tasks for each r
 
 -- A saved check-in's UPDATE may change visibility ONLY. (spec §5) ---------
 create or replace function app.checkins_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if (select auth.uid()) is null then
     return new;
@@ -93,7 +93,7 @@ create trigger denorm_checkin_content
 
 -- Caregiver's shifts UPDATE: only the two visit-verification columns. ----
 create or replace function app.shifts_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   -- Admin-pool writes (seed, migrations) carry no JWT claims -> auth.uid()
   -- is null. Those paths are trusted; do not apply the caregiver clamp.
@@ -120,7 +120,7 @@ create trigger shifts_column_scope before update on public.shifts
 -- (invite acceptance un-removing a soft-removed member, which also rewrites
 -- role / is_family_member) runs with no claims -> auth.uid() null -> trusted.
 create or replace function app.circle_members_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if (select auth.uid()) is null then
     return new;
