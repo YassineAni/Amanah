@@ -25,3 +25,7 @@ server/audio/tts/
 .DS_Store
 Thumbs.db
 *.log
+
+# Supabase local stack
+supabase/.branches/
+supabase/.temp/
