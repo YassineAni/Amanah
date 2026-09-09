@@ -2160,9 +2160,11 @@ describe("the browser cannot reach data through PostgREST", () => {
 describe("migrations are idempotent", () => {
   // db reset re-applies every migration; two runs prove no migration breaks on
   // a non-empty DB. Each run is ~15-30s, so this test needs a longer timeout.
+  // shell:true + a literal command string so it works on Windows (npx is
+  // npx.cmd, which execFile can't spawn without a shell) and Linux CI alike.
   test("db reset twice in a row succeeds", () => {
-    execFileSync("npx", ["supabase", "db", "reset"], { stdio: "pipe" });
-    execFileSync("npx", ["supabase", "db", "reset"], { stdio: "pipe" });
+    execFileSync("npx supabase db reset", { stdio: "pipe", shell: true });
+    execFileSync("npx supabase db reset", { stdio: "pipe", shell: true });
   }, 180_000);
 });
 ```
