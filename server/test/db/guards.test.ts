@@ -7,23 +7,17 @@ let fx: Fixture;
 beforeEach(async () => { fx = await loadFixture(); });
 
 describe("last-coordinator / owner guard", () => {
-  test("removing the only coordinator is rejected", async () => {
-    // DEVIATION from brief (see task-21-report.md): the brief targeted
-    // circleA1 + A1_coordinator, but A1_coordinator IS the orgA owner, so
-    // app.guard_member_removal() short-circuits on the owner branch
-    // ('organization owner') and never reaches the last-coordinator branch.
-    // circleA2 has two coordinators (A2_coordinator, twoCircle) and the orgA
-    // owner is not a member, so removing them both exercises the intended
-    // '/last coordinator/i' path. Assertion is unchanged.
+  // circleA2 has exactly two coordinators (A2_coordinator, twoCircle) and
+  // NEITHER is the orgA owner — so this exercises the last-coordinator branch,
+  // not the owner branch.
+  test("removing the last coordinator is rejected", async () => {
     const c = admin(); await c.connect();
     try {
-      // remove one of the two coordinators — allowed, one still remains
       await c.query(
         `update public.circle_members set removed_at = now()
          where circle_id = $1 and user_id = $2`,
         [fx.circleA2, fx.users.twoCircle],
       );
-      // removing the remaining coordinator is the last one — rejected
       await expect(c.query(
         `update public.circle_members set removed_at = now()
          where circle_id = $1 and user_id = $2`,
@@ -49,29 +43,27 @@ describe("last-coordinator / owner guard", () => {
     } finally { await c.end(); }
   });
 
-  test("two concurrent self-removals cannot both succeed", async () => {
-    const c0 = admin(); await c0.connect();
-    await c0.query(`insert into public.circle_members (circle_id,user_id,role)
-      values ($1,$2,'coordinator'),($1,$3,'coordinator')`,
-      [fx.circleA1, fx.users.twoCircle, fx.users.A2_coordinator]);
-    // now 3 coordinators: A1_coordinator (owner), twoCircle, A2_coordinator
-    await c0.end();
-
+  test("the FOR UPDATE lock serialises two concurrent last-two-coordinator removals", async () => {
+    // circleA2's two coordinators (A2_coordinator, twoCircle), neither the owner.
+    // Without the lock both txns see "2 coordinators, removing me leaves 1" and
+    // both commit -> 0. With the lock: A wins, B blocks, B re-evaluates against
+    // A's committed state -> "removing me leaves 0" -> B RAISES. One survives.
     const a = admin(), b = admin();
     await a.connect(); await b.connect();
     try {
       await a.query("begin"); await b.query("begin");
       await a.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA1, fx.users.twoCircle]);
-      // b blocks on the FOR UPDATE lock until a commits
+        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.A2_coordinator]);
       const bPromise = b.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA1, fx.users.A2_coordinator]);
+        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.twoCircle]);
+      // prove B is actually waiting on A's lock: race it against a short timer.
+      const timer = new Promise((res) => setTimeout(() => res("blocked"), 400));
+      expect(await Promise.race([bPromise.then(() => "ran"), timer])).toBe("blocked");
       await a.query("commit");
-      await bPromise;                     // now sees 2 coordinators, still ok
-      await b.query("commit");
-      // one more removal must now fail (only the owner left)
+      await expect(bPromise).rejects.toThrow(/last coordinator/i);
+      await b.query("rollback");
       const check = await a.query(`select count(*)::int n from public.circle_members
-        where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA1]);
+        where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA2]);
       expect(check.rows[0].n).toBe(1);
     } finally { await a.end(); await b.end(); }
   });
