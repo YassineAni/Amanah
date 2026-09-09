@@ -685,9 +685,9 @@ grant execute on function app.is_org_owner(uuid)  to app_authenticated;
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select proname, prosecdef, (select rolname from pg_roles where oid = proowner) as owner from pg_proc where pronamespace = 'app'::regnamespace and proname like 'is_%' or proname = 'circle_role';"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select proname, prosecdef, provolatile, (select rolname from pg_roles where oid = proowner) as owner from pg_proc where pronamespace = 'app'::regnamespace and (proname like 'is\_%' or proname = 'circle_role');"
 ```
-Expected: `prosecdef = t` (security definer) and `owner = postgres` for all four.
+Expected: `prosecdef = t` (security definer), `provolatile = s` (stable), and `owner = postgres` for all four.
 
 - [ ] **Step 3: Commit**
 
