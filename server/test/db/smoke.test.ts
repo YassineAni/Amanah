@@ -11,3 +11,12 @@ test("fixture builds and a member reads their own circle", async () => {
   );
   expect(rows.rowCount).toBe(1);
 });
+
+test("asUser mints real email into request.jwt.claims (not the sentinel)", async () => {
+  const r = await asUser(fx.users.A1_coordinator, (c) =>
+    c.query<{ e: string }>(
+      "select (current_setting('request.jwt.claims')::jsonb ->> 'email') as e",
+    ),
+  );
+  expect(r.rows[0].e).toBe("A1_coordinator@example.com");
+});
