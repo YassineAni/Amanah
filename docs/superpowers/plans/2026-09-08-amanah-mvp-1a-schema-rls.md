@@ -22,7 +22,7 @@ Every task's requirements implicitly include this section. Values are copied ver
 - Postgres: all PKs `uuid default gen_random_uuid()`. Every table has `created_at timestamptz not null default now()`; mutable tables also `updated_at timestamptz not null default now()` (§4).
 - Enums are exactly: `org_kind(family|agency)`, `circle_role(elder|coordinator|caregiver|family)`, `mood(good|ok|hard)`, `checkin_visibility(circle|family|coordinator|mood_only)`, `task_category(medication|personal_care|meal|rest|activity|other)`, `activity_tag(companionship|mobility|outing|meal_prep|hygiene|medical|household|other)` (§4). `file_visibility` / `file_category` are **not** created (clinical files are out — D16).
 - Node 24, `"type": "module"` in `server/package.json`. Migration timestamps use the prefix `20260908NNNNNN`.
-- Local Supabase DB URL: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. Local API URL: `http://127.0.0.1:54321`.
+- Local Supabase ports are remapped `543xx` → `541xx` (this Windows host reserves `54312–54411` via `winnat`/Hyper-V dynamic exclusion; `541xx` is free). `supabase/config.toml`: `[api].port = 54121`, `[db].port = 54122`, `[db].shadow_port = 54120`, `[studio].port = 54123`, `[inbucket].port = 54124`, `[analytics].port = 54127`. Local Supabase DB URL: `postgresql://postgres:postgres@127.0.0.1:54122/postgres`. Local API URL: `http://127.0.0.1:54121`. Parts 1b/1c use the same remapped ports.
 
 ---
 
@@ -84,7 +84,7 @@ Edit `supabase/config.toml`. Under `[api]` set:
 ```toml
 [api]
 enabled = true
-port = 54321
+port = 54121
 schemas = ["graphql_public"]
 extra_search_path = ["extensions"]
 max_rows = 1000
@@ -140,7 +140,7 @@ Run:
 npx supabase start
 npx supabase status
 ```
-Expected: prints API URL `http://127.0.0.1:54321`, DB URL on `54322`, plus `anon key` and `service_role key`. Then:
+Expected: prints API URL `http://127.0.0.1:54121`, DB URL on `54122`, plus `anon key` and `service_role key`. Then:
 ```bash
 npx supabase stop
 git add supabase/config.toml supabase/.gitignore server/package.json server/package-lock.json server/vitest.config.ts server/test/db/.gitkeep .gitignore
@@ -208,7 +208,7 @@ Expected: reset completes with no error; the message lists `20260908000001` appl
 
 Run:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\dT public.*" -c "\dn app" -c "\du app_authenticated"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "\dT public.*" -c "\dn app" -c "\du app_authenticated"
 ```
 Expected: the six enums listed, schema `app` present, role `app_authenticated` with `Login` attribute and **no** `Bypass RLS`.
 
@@ -283,7 +283,7 @@ Run `npx supabase db reset`. Expected: success through migration `20260908000002
 
 Run:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\d public.profiles" -c "\d public.circles"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "\d public.profiles" -c "\d public.circles"
 ```
 Expected: `profiles.id` FK → `auth.users(id)`; `circles_one_elder_per_user` partial unique index present.
 
@@ -353,7 +353,7 @@ create unique index invites_one_pending_per_email
 
 Run `npx supabase db reset`. Then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\d public.circle_members" -c "\d public.invites"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "\d public.circle_members" -c "\d public.invites"
 ```
 Expected: three partial indexes on `circle_members`; `invites_one_pending_per_email` present.
 
@@ -429,7 +429,7 @@ create trigger touch_circle_members before update on public.circle_members for e
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at, raw_app_meta_data, raw_user_meta_data) values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 't1@example.com', '', now(), now(), '{}', '{}');" -c "select id, email, full_name from public.profiles;"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at, raw_app_meta_data, raw_user_meta_data) values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 't1@example.com', '', now(), now(), '{}', '{}');" -c "select id, email, full_name from public.profiles;"
 ```
 Expected: one `profiles` row, `full_name = 't1'` (derived from the email local-part because metadata was empty).
 
@@ -514,7 +514,7 @@ create trigger touch_shifts   before update on public.shifts   for each row exec
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\d public.checkin_content" -c "\d public.shifts"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "\d public.checkin_content" -c "\d public.shifts"
 ```
 Expected: `checkin_content.audio_path` CHECK present; `shifts_time_order` and `shifts_checkout_needs_checkin` present.
 
@@ -603,7 +603,7 @@ create trigger touch_adhoc_tasks   before update on public.adhoc_tasks   for eac
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\d public.completions"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "\d public.completions"
 ```
 Expected: FK `completions_item_same_circle` on `(routine_item_id, circle_id)` → `routine_items(id, circle_id)`.
 
@@ -685,7 +685,7 @@ grant execute on function app.is_org_owner(uuid)  to app_authenticated;
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select proname, prosecdef, (select rolname from pg_roles where oid = proowner) as owner from pg_proc where pronamespace = 'app'::regnamespace and proname like 'is_%' or proname = 'circle_role';"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select proname, prosecdef, (select rolname from pg_roles where oid = proowner) as owner from pg_proc where pronamespace = 'app'::regnamespace and proname like 'is_%' or proname = 'circle_role';"
 ```
 Expected: `prosecdef = t` (security definer) and `owner = postgres` for all four.
 
@@ -766,7 +766,7 @@ create policy sel_profiles on public.profiles for select to app_authenticated
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select relname, relrowsecurity, relforcerowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' order by relname;"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select relname, relrowsecurity, relforcerowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' order by relname;"
 ```
 Expected: `relrowsecurity` and `relforcerowsecurity` both `t` for all 11 tables.
 
@@ -821,7 +821,7 @@ Run `npx supabase db reset`. Expected: success through `20260908000009`.
 - [ ] **Step 3: Verify there is exactly one SELECT policy**
 
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select policyname, cmd, roles from pg_policies where tablename = 'checkin_content';"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select policyname, cmd, roles from pg_policies where tablename = 'checkin_content';"
 ```
 Expected: a single row, `cmd = SELECT`, `roles = {app_authenticated}`.
 
@@ -1037,7 +1037,7 @@ create policy upd_organizations on public.organizations
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select tablename, cmd, policyname from pg_policies where tablename in ('circles','organizations','circle_members','invites') order by tablename, cmd;"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select tablename, cmd, policyname from pg_policies where tablename in ('circles','organizations','circle_members','invites') order by tablename, cmd;"
 ```
 Expected: no `INSERT` row for `circles`, `organizations`, or `circle_members`; one `INSERT` row for `invites`.
 
@@ -1317,7 +1317,7 @@ alter default privileges in schema public
 
 Run `npx supabase db reset`, then:
 ```bash
-psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select grantee, privilege_type from information_schema.role_table_grants where table_schema='public' and table_name='checkins' order by grantee;"
+psql "postgresql://postgres:postgres@127.0.0.1:54122/postgres" -c "select grantee, privilege_type from information_schema.role_table_grants where table_schema='public' and table_name='checkins' order by grantee;"
 ```
 Expected: `app_authenticated` has SELECT/INSERT/UPDATE/DELETE; `anon` and `authenticated` appear **nowhere** in the list.
 
@@ -1342,7 +1342,7 @@ git commit -m "feat(1a): migration 015 — revoke anon/authenticated, grant app_
   - `rawNoClaims(): Promise<pg.Client>` — connects as `app_authenticated`, never sets `request.jwt.claims`.
   - `asUser<T>(userId: string, fn: (c: pg.Client) => Promise<T>): Promise<T>` — connects as `app_authenticated`, `BEGIN`, `select set_config('request.jwt.claims', $1, true)` with `{"sub": userId, "role":"authenticated", "email": <looked up>}` bound, runs `fn`, **`ROLLBACK`**, closes. For read-only matrix assertions.
   - `asUserCommitted<T>(userId: string, fn: (c: pg.Client) => Promise<T>): Promise<T>` — identical but **`COMMIT`s**. For write-matrix tests that must leave state behind (a caregiver checks in a shift, a member is removed). Callers reload the fixture per test (`beforeEach`).
-  - `postgrest(path: string, jwt: string): Promise<Response>` — `fetch('http://127.0.0.1:54321' + path, { headers: { apikey: ANON_KEY, Authorization: 'Bearer ' + jwt } })`.
+  - `postgrest(path: string, jwt: string): Promise<Response>` — `fetch('http://127.0.0.1:54121' + path, { headers: { apikey: ANON_KEY, Authorization: 'Bearer ' + jwt } })`.
   - `mintJwt(claims: { sub: string; email: string }): Promise<string>` — HS256 over the local JWT secret.
   - `loadFixture(): Promise<Fixture>` — truncates tenant tables, inserts `auth.users` rows (trigger makes profiles), builds `Fixture` (see below).
 - `Fixture` shape:
@@ -1362,9 +1362,9 @@ Create `server/test/db/clients.ts`:
 import { Client } from "pg";
 import { SignJWT } from "jose";
 
-const ADMIN_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
-const APP_URL = "postgresql://app_authenticated:app_authenticated@127.0.0.1:54322/postgres";
-const API_URL = "http://127.0.0.1:54321";
+const ADMIN_URL = "postgresql://postgres:postgres@127.0.0.1:54122/postgres";
+const APP_URL = "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres";
+const API_URL = "http://127.0.0.1:54121";
 // Local Supabase fixed dev secret (supabase/config.toml [auth].jwt_secret default).
 const JWT_SECRET = new TextEncoder().encode(
   "super-secret-jwt-token-with-at-least-32-characters-long",
@@ -2047,7 +2047,7 @@ describe("connection-level claims are not sticky", () => {
   test("set claims in a txn, DISCARD ALL, next txn sees nothing", async () => {
     const c = new Client({
       connectionString:
-        "postgresql://app_authenticated:app_authenticated@127.0.0.1:54322/postgres",
+        "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres",
     });
     await c.connect();
     try {
