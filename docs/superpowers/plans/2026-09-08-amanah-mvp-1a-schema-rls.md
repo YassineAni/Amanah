@@ -1138,6 +1138,11 @@ create trigger denorm_checkin_content
 create or replace function app.shifts_column_scope()
 returns trigger language plpgsql set search_path = '' as $$
 begin
+  -- Admin-pool writes (seed, migrations) carry no JWT claims -> auth.uid()
+  -- is null. Those paths are trusted; do not apply the caregiver clamp.
+  if (select auth.uid()) is null then
+    return new;
+  end if;
   if app.circle_role(new.circle_id) = 'coordinator' then
     return new;  -- coordinator may change anything the policy allowed
   end if;
@@ -1154,10 +1159,15 @@ end $$;
 create trigger shifts_column_scope before update on public.shifts
   for each row execute function app.shifts_column_scope();
 
--- Coordinator's circle_members UPDATE: only removed_at. ------------------
+-- Coordinator's circle_members UPDATE: only removed_at. The admin pool
+-- (invite acceptance un-removing a soft-removed member, which also rewrites
+-- role / is_family_member) runs with no claims -> auth.uid() null -> trusted.
 create or replace function app.circle_members_column_scope()
 returns trigger language plpgsql set search_path = '' as $$
 begin
+  if (select auth.uid()) is null then
+    return new;
+  end if;
   if new.role is distinct from old.role
      or new.is_family_member is distinct from old.is_family_member
      or new.user_id is distinct from old.user_id
@@ -1330,7 +1340,8 @@ git commit -m "feat(1a): migration 015 — revoke anon/authenticated, grant app_
 **Interfaces:**
 - Produces:
   - `rawNoClaims(): Promise<pg.Client>` — connects as `app_authenticated`, never sets `request.jwt.claims`.
-  - `asUser<T>(userId: string, fn: (c: pg.Client) => Promise<T>): Promise<T>` — connects as `app_authenticated`, `BEGIN`, `select set_config('request.jwt.claims', $1, true)` with `{"sub": userId, "role":"authenticated", "email": <looked up>}` bound, runs `fn`, `ROLLBACK`, closes.
+  - `asUser<T>(userId: string, fn: (c: pg.Client) => Promise<T>): Promise<T>` — connects as `app_authenticated`, `BEGIN`, `select set_config('request.jwt.claims', $1, true)` with `{"sub": userId, "role":"authenticated", "email": <looked up>}` bound, runs `fn`, **`ROLLBACK`**, closes. For read-only matrix assertions.
+  - `asUserCommitted<T>(userId: string, fn: (c: pg.Client) => Promise<T>): Promise<T>` — identical but **`COMMIT`s**. For write-matrix tests that must leave state behind (a caregiver checks in a shift, a member is removed). Callers reload the fixture per test (`beforeEach`).
   - `postgrest(path: string, jwt: string): Promise<Response>` — `fetch('http://127.0.0.1:54321' + path, { headers: { apikey: ANON_KEY, Authorization: 'Bearer ' + jwt } })`.
   - `mintJwt(claims: { sub: string; email: string }): Promise<string>` — HS256 over the local JWT secret.
   - `loadFixture(): Promise<Fixture>` — truncates tenant tables, inserts `auth.users` rows (trigger makes profiles), builds `Fixture` (see below).
@@ -1373,10 +1384,8 @@ export async function rawNoClaims(): Promise<Client> {
   return c;
 }
 
-/** app_authenticated inside a txn with claims set for `userId`. Rolls back. */
-export async function asUser<T>(
-  userId: string,
-  fn: (c: Client) => Promise<T>,
+async function withClaims<T>(
+  userId: string, fn: (c: Client) => Promise<T>, finish: "rollback" | "commit",
 ): Promise<T> {
   const c = new Client({ connectionString: APP_URL });
   await c.connect();
@@ -1389,12 +1398,25 @@ export async function asUser<T>(
     await c.query("select set_config('request.jwt.claims', $1, true)", [
       JSON.stringify({ sub: userId, role: "authenticated", email: em.rows[0]?.email ?? "unknown@example.com" }),
     ]);
-    return await fn(c);
-  } finally {
+    const out = await fn(c);
+    await c.query(finish);
+    return out;
+  } catch (e) {
     await c.query("rollback").catch(() => {});
+    throw e;
+  } finally {
     await c.end();
   }
 }
+
+/** app_authenticated inside a txn with claims set for `userId`. Rolls back. */
+export const asUser = <T>(userId: string, fn: (c: Client) => Promise<T>) =>
+  withClaims(userId, fn, "rollback");
+
+/** Same, but COMMITs — for write-matrix tests that need committed state.
+ *  The caller must reload the fixture per test (beforeEach). */
+export const asUserCommitted = <T>(userId: string, fn: (c: Client) => Promise<T>) =>
+  withClaims(userId, fn, "commit");
 
 export async function mintJwt(claims: { sub: string; email: string }): Promise<string> {
   return new SignJWT({ ...claims, role: "authenticated" })
@@ -1609,19 +1631,9 @@ describe("tenant SELECT isolation", () => {
     } finally { await c.end(); }
   });
 
-  test("a removed member sees nothing", async () => {
-    // soft-remove the hired caregiver, then read as them
-    await asUser(fx.users.A1_coordinator, async (c) => {
-      await c.query(
-        `update public.circle_members set removed_at = now()
-         where circle_id=$1 and user_id=$2`,
-        [fx.circleA1, fx.users.A1_caregiver_hired],
-      );
-      // still inside the rolled-back txn: read as the caregiver won't see the
-      // uncommitted change, so assert against a committed removal instead.
-    });
-    // commit a removal on the admin path is out of scope here; covered in guards.test.ts
-  });
+  // (a soft-removed member seeing nothing is exercised with a committed
+  // removal in write-matrix.test.ts — it cannot be observed inside asUser's
+  // rolled-back transaction.)
 });
 ```
 
@@ -1744,17 +1756,18 @@ Expected: all pass. If a tier test fails, fix migration 009's `case` expression 
 
 Create `server/test/db/write-matrix.test.ts`:
 ```ts
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { loadFixture, type Fixture } from "./fixture";
-import { asUser } from "./clients";
+import { asUser, asUserCommitted } from "./clients";
 
 let fx: Fixture;
-beforeAll(async () => { fx = await loadFixture(); });
+// beforeEach (not beforeAll): asUserCommitted tests leave state behind.
+beforeEach(async () => { fx = await loadFixture(); });
 
 const denied = (p: Promise<unknown>) => expect(p).rejects.toThrow();
 const allowed = (p: Promise<unknown>) => expect(p).resolves.toBeDefined();
 
-describe("write matrix", () => {
+describe("write matrix — role gating", () => {
   test("caregiver cannot INSERT a routine_item", () =>
     denied(asUser(fx.users.A1_caregiver_hired, (c) =>
       c.query(`insert into public.routine_items (circle_id,title,time_of_day,weekdays)
@@ -1765,15 +1778,16 @@ describe("write matrix", () => {
       c.query(`insert into public.routine_items (circle_id,title,time_of_day,weekdays)
                values ($1,'x','09:00','{1,2}')`, [fx.circleA1]))));
 
-  test("family member cannot toggle a completion", () =>
-    denied(asUser(fx.users.A1_family, async (c) => {
-      const r = await c.query(`insert into public.routine_items (circle_id,title,time_of_day,weekdays)
-        values ($1,'y','08:00','{1}') returning id`, [fx.circleA1]).catch(() => null);
-      // family cannot even create the routine item; assert the completion insert fails
-      await c.query(`insert into public.completions (circle_id,routine_item_id,on_date,done_by)
-        values ($1,$2,current_date,$3)`,
-        [fx.circleA1, r?.rows[0]?.id ?? fx.circleA1, fx.users.A1_family]);
-    })));
+  test("family member cannot INSERT a completion", async () => {
+    // seed a routine item as the coordinator (committed), then try as family
+    const rid = await asUserCommitted(fx.users.A1_coordinator, (c) =>
+      c.query(`insert into public.routine_items (circle_id,title,time_of_day,weekdays)
+               values ($1,'y','08:00','{1,2,3,4,5}') returning id`, [fx.circleA1]),
+    ).then((r) => r.rows[0].id as string);
+    await denied(asUser(fx.users.A1_family, (c) =>
+      c.query(`insert into public.completions (circle_id,routine_item_id,on_date,done_by)
+               values ($1,$2,current_date,$3)`, [fx.circleA1, rid, fx.users.A1_family])));
+  });
 
   test("a non-elder cannot change a non-proxy check-in's visibility", () =>
     denied(asUser(fx.users.A1_coordinator, (c) =>
@@ -1785,30 +1799,6 @@ describe("write matrix", () => {
       c.query(`update public.checkins set visibility='circle' where id=$1`,
         [fx.checkins.A1_elder_self]))));
 
-  test("an unassigned caregiver cannot set checked_in_at", () =>
-    denied(asUser(fx.users.A1_caregiver_hired, async (c) => {
-      const s = await c.query(`select id from public.shifts limit 1`);
-      if (s.rowCount === 0) throw new Error("no shift"); // fixture has none -> treat as denied
-    })));
-
-  test("a caregiver UPDATE that also changes caregiver_id is rejected by the column-scope trigger", async () => {
-    // coordinator makes a shift assigned to the hired caregiver
-    const shiftId = await asUser(fx.users.A1_coordinator, async (c) => {
-      const r = await c.query(
-        `insert into public.shifts (circle_id,starts_at,ends_at,caregiver_id)
-         values ($1, now(), now() + interval '2 hours', $2) returning id`,
-        [fx.circleA1, fx.users.A1_caregiver_hired]);
-      return r.rows[0].id as string;
-    }).catch(() => null);
-    if (!shiftId) return; // insert rolled back with asUser; covered in integration (1b)
-  });
-
-  test("a removed_at UPDATE that also flips role is rejected", () =>
-    denied(asUser(fx.users.A1_coordinator, (c) =>
-      c.query(`update public.circle_members set removed_at=now(), role='coordinator'
-               where circle_id=$1 and user_id=$2`,
-        [fx.circleA1, fx.users.A1_family]))));
-
   test("circles cannot be INSERTed by app_authenticated (no policy)", () =>
     denied(asUser(fx.users.A1_coordinator, (c) =>
       c.query(`insert into public.circles (org_id,name,elder_name,timezone)
@@ -1819,6 +1809,64 @@ describe("write matrix", () => {
       c.query(`insert into public.circle_members (circle_id,user_id,role)
                values ($1,$2,'family')`, [fx.circleA1, fx.users.twoCircle]))));
 });
+
+describe("write matrix — column-scope triggers (committed state)", () => {
+  async function seedShift(): Promise<string> {
+    return asUserCommitted(fx.users.A1_coordinator, (c) =>
+      c.query(
+        `insert into public.shifts (circle_id,starts_at,ends_at,caregiver_id)
+         values ($1, now(), now() + interval '2 hours', $2) returning id`,
+        [fx.circleA1, fx.users.A1_caregiver_hired],
+      ),
+    ).then((r) => r.rows[0].id as string);
+  }
+
+  test("assigned caregiver CAN set checked_in_at", async () => {
+    const id = await seedShift();
+    await allowed(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`update public.shifts set checked_in_at = now() where id = $1`, [id])));
+  });
+
+  test("caregiver setting checked_in_at AND caregiver_id is rejected by the trigger", async () => {
+    const id = await seedShift();
+    await denied(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(
+        `update public.shifts set checked_in_at = now(), caregiver_id = $2 where id = $1`,
+        [id, fx.users.A1_elder],
+      )));
+  });
+
+  test("an unassigned caregiver cannot touch a shift at all (RLS)", async () => {
+    const id = await seedShift();
+    // reassign to nobody, committed
+    await asUserCommitted(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.shifts set caregiver_id = null where id = $1`, [id]));
+    await denied(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`update public.shifts set checked_in_at = now() where id = $1`, [id])));
+  });
+
+  test("a removed_at UPDATE that also flips role is rejected", () =>
+    denied(asUser(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.circle_members set removed_at=now(), role='coordinator'
+               where circle_id=$1 and user_id=$2`,
+        [fx.circleA1, fx.users.A1_family]))));
+
+  test("a coordinator CAN soft-remove a family member (removed_at only)", () =>
+    allowed(asUser(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.circle_members set removed_at=now()
+               where circle_id=$1 and user_id=$2`,
+        [fx.circleA1, fx.users.A1_family]))));
+
+  test("a soft-removed member then sees nothing (committed removal, fresh read)", async () => {
+    await asUserCommitted(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.circle_members set removed_at = now()
+               where circle_id=$1 and user_id=$2`,
+        [fx.circleA1, fx.users.A1_caregiver_hired]));
+    const r = await asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`select * from public.checkins where circle_id = $1`, [fx.circleA1]));
+    expect(r.rowCount).toBe(0);
+  });
+});
 ```
 
 - [ ] **Step 2: Run and commit**
@@ -1826,9 +1874,9 @@ describe("write matrix", () => {
 ```bash
 npm --prefix server run test:db -- write-matrix
 git add server/test/db/write-matrix.test.ts
-git commit -m "test(1a): §5 write matrix — deny + allow"
+git commit -m "test(1a): §5 write matrix — role gating + column-scope triggers (committed)"
 ```
-Note: cases that need a committed row (shift check-in/out, cross-txn removal) are marked and are fully exercised by the 1b integration test — they cannot commit inside `asUser`'s rollback.
+Every case now asserts a real allow/deny. The committed-state cases reload the fixture per test.
 
 ---
 
