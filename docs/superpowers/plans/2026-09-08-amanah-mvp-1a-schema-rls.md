@@ -1879,11 +1879,14 @@ describe("write matrix — column-scope triggers (committed state)", () => {
 
   test("assigned caregiver CAN set checked_in_at", async () => {
     const id = await seedShift();
-    await allowed(asUser(fx.users.A1_caregiver_hired, (c) =>
-      c.query(`update public.shifts set checked_in_at = now() where id = $1`, [id])));
+    const r = await asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`update public.shifts set checked_in_at = now() where id = $1 returning id`, [id]));
+    expect(r.rowCount).toBe(1);
   });
 
   test("caregiver setting checked_in_at AND caregiver_id is rejected by the trigger", async () => {
+    // the caregiver IS assigned, so RLS USING passes and the column-scope
+    // trigger fires and RAISES — a real error, not a silent 0-row.
     const id = await seedShift();
     await denied(asUser(fx.users.A1_caregiver_hired, (c) =>
       c.query(
@@ -1893,12 +1896,13 @@ describe("write matrix — column-scope triggers (committed state)", () => {
   });
 
   test("an unassigned caregiver cannot touch a shift at all (RLS)", async () => {
+    // RLS blocks on the USING side -> silent 0-row UPDATE, not a throw.
     const id = await seedShift();
-    // reassign to nobody, committed
     await asUserCommitted(fx.users.A1_coordinator, (c) =>
       c.query(`update public.shifts set caregiver_id = null where id = $1`, [id]));
-    await denied(asUser(fx.users.A1_caregiver_hired, (c) =>
-      c.query(`update public.shifts set checked_in_at = now() where id = $1`, [id])));
+    const r = await asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`update public.shifts set checked_in_at = now() where id = $1 returning id`, [id]));
+    expect(r.rowCount).toBe(0);
   });
 
   test("a removed_at UPDATE that also flips role is rejected", () =>
