@@ -1106,9 +1106,11 @@ create trigger freeze_adhoc       before update on public.adhoc_tasks for each r
 
 -- checkins UPDATE: only `visibility` may change (spec §5 "UPDATE (visibility
 -- only)"). Admin-pool paths (no JWT) are trusted and exempt, same as the
--- other column-scope triggers.
+-- other column-scope triggers. SECURITY DEFINER: the body calls auth.uid(),
+-- and app_authenticated has no USAGE on schema `auth` — an INVOKER function
+-- would raise permission-denied on every user UPDATE.
 create or replace function app.checkins_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if (select auth.uid()) is null then
     return new;
@@ -1158,8 +1160,10 @@ create trigger denorm_checkin_content
   for each row execute function app.checkin_content_denorm();
 
 -- Caregiver's shifts UPDATE: only the two visit-verification columns. ----
+-- SECURITY DEFINER: body calls auth.uid(); app_authenticated lacks USAGE on
+-- schema `auth`, so an INVOKER function raises permission-denied.
 create or replace function app.shifts_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   -- Admin-pool writes (seed, migrations) carry no JWT claims -> auth.uid()
   -- is null. Those paths are trusted; do not apply the caregiver clamp.
@@ -1185,8 +1189,10 @@ create trigger shifts_column_scope before update on public.shifts
 -- Coordinator's circle_members UPDATE: only removed_at. The admin pool
 -- (invite acceptance un-removing a soft-removed member, which also rewrites
 -- role / is_family_member) runs with no claims -> auth.uid() null -> trusted.
+-- SECURITY DEFINER: body calls auth.uid(); app_authenticated lacks USAGE on
+-- schema `auth`, so an INVOKER function raises permission-denied.
 create or replace function app.circle_members_column_scope()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if (select auth.uid()) is null then
     return new;
@@ -1833,15 +1839,21 @@ describe("write matrix — role gating", () => {
                values ($1,$2,current_date,$3)`, [fx.circleA1, rid, fx.users.A1_family])));
   });
 
-  test("a non-elder cannot change a non-proxy check-in's visibility", () =>
-    denied(asUser(fx.users.A1_coordinator, (c) =>
-      c.query(`update public.checkins set visibility='circle' where id=$1`,
-        [fx.checkins.A1_elder_self]))));
+  // An RLS UPDATE blocked on the USING side is SILENT (0 rows, no error) —
+  // assert the row count, not a throw.
+  test("a non-elder cannot change a non-proxy check-in's visibility", async () => {
+    const r = await asUser(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.checkins set visibility='circle' where id=$1 returning id`,
+        [fx.checkins.A1_elder_self]));
+    expect(r.rowCount).toBe(0);
+  });
 
-  test("the elder CAN change her own check-in's visibility", () =>
-    allowed(asUser(fx.users.A1_elder, (c) =>
-      c.query(`update public.checkins set visibility='circle' where id=$1`,
-        [fx.checkins.A1_elder_self]))));
+  test("the elder CAN change her own check-in's visibility", async () => {
+    const r = await asUser(fx.users.A1_elder, (c) =>
+      c.query(`update public.checkins set visibility='circle' where id=$1 returning id`,
+        [fx.checkins.A1_elder_self]));
+    expect(r.rowCount).toBe(1);
+  });
 
   test("circles cannot be INSERTed by app_authenticated (no policy)", () =>
     denied(asUser(fx.users.A1_coordinator, (c) =>
