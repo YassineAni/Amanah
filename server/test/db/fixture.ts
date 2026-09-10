@@ -6,11 +6,23 @@ export interface Fixture {
   circleA1: string; circleA2: string; circleB1: string;
   users: Record<string, string>;
   checkins: Record<string, string>;
+  // Added by the final-review fix wave. Every tenant table is now non-empty in
+  // at least two circles, so the cross-tenant assertions in select-matrix are
+  // load-bearing rather than vacuously true on an empty table.
+  shifts: Record<string, string>;
+  routineItems: Record<string, string>;
+  completions: Record<string, string>;
+  adhocTasks: Record<string, string>;
+  invites: Record<string, string>;
 }
 
 const USERS = [
   "A1_coordinator", "A1_elder", "A1_caregiver_hired", "A1_family",
   "A2_coordinator", "B1_coordinator", "twoCircle",
+  // the elder / is_family_member = false cell (spec §11's role x is_family
+  // matrix). Distinguishes "the family tier ADMITS me" from "I am the elder",
+  // which is exactly what upd_checkins' visibility disjunct must test.
+  "A2_elder_notfamily",
 ] as const;
 
 async function mkUser(c: import("pg").Client, label: string): Promise<string> {
@@ -63,6 +75,11 @@ export async function loadFixture(): Promise<Fixture> {
     await c.query(`update public.circles set elder_user_id=$1 where id=$2`,
       [users.A1_elder, circleA1]);
     await mem(circleA2, users.A2_coordinator, "coordinator", true);
+    // A2's elder is NOT a family member: the family tier does not admit her.
+    // (membership row first — circles_elder_consistency validates the pair.)
+    await mem(circleA2, users.A2_elder_notfamily, "elder", false);
+    await c.query(`update public.circles set elder_user_id=$1 where id=$2`,
+      [users.A2_elder_notfamily, circleA2]);
     await mem(circleB1, users.B1_coordinator, "coordinator", true);
     // twoCircle is coordinator in A2 AND family in B1 — the multi-circle viewer
     await mem(circleA2, users.twoCircle, "coordinator", true);
@@ -73,17 +90,18 @@ export async function loadFixture(): Promise<Fixture> {
     const checkins: Record<string, string> = {};
     const addCheckin = async (
       key: string, visibility: string, recorder: string, isProxy: boolean,
+      circle: string = circleA1,
     ) => {
       const id = randomUUID();
       await c.query(
         `insert into public.checkins (id,circle_id,occurred_on,mood,spoken_lang,visibility,recorded_by,is_proxy,created_via)
          values ($1,$2,current_date,'ok','ar',$3,$4,$5,'demo')`,
-        [id, circleA1, visibility, recorder, isProxy],
+        [id, circle, visibility, recorder, isProxy],
       );
       await c.query(
         `insert into public.checkin_content (checkin_id,circle_id,visibility,recorded_by,is_proxy,transcript,translation)
          values ($1,$2,$3,$4,$5,'words','words')`,
-        [id, circleA1, visibility, recorder, isProxy],
+        [id, circle, visibility, recorder, isProxy],
       );
       checkins[key] = id;
     };
@@ -92,8 +110,81 @@ export async function loadFixture(): Promise<Fixture> {
     await addCheckin("A1_coordinator", "coordinator", users.A1_coordinator, true);
     await addCheckin("A1_moodonly", "mood_only", users.A1_coordinator, true);
     await addCheckin("A1_elder_self", "family", users.A1_elder, false);
+    // circleA2: a family-tier proxy row the NOT-family elder cannot see. She
+    // must not be able to widen it either (upd_checkins' admission test).
+    await addCheckin("A2_family", "family", users.A2_coordinator, true, circleA2);
+    // circleB1: the other tenant. Without these, "viewer sees only their own
+    // circle" is true no matter what RLS does.
+    await addCheckin("B1_circle", "circle", users.B1_coordinator, true, circleB1);
+    await addCheckin("B1_family", "family", users.B1_coordinator, true, circleB1);
 
-    return { orgA, orgB, circleA1, circleA2, circleB1, users, checkins };
+    // ---- the five tables that used to be empty everywhere ----------------
+    const one = async (sql: string, params: unknown[]): Promise<string> =>
+      (await c.query(sql, params)).rows[0].id as string;
+
+    const shifts: Record<string, string> = {
+      // assigned to the hired caregiver: the row a REMOVED caregiver must no
+      // longer be able to check in to (delete-matrix).
+      A1: await one(
+        `insert into public.shifts (circle_id,starts_at,ends_at,caregiver_id,purpose)
+         values ($1, now(), now() + interval '2 hours', $2, 'morning visit') returning id`,
+        [circleA1, users.A1_caregiver_hired]),
+      B1: await one(
+        `insert into public.shifts (circle_id,starts_at,ends_at,caregiver_id,purpose)
+         values ($1, now(), now() + interval '2 hours', $2, 'B1 visit') returning id`,
+        [circleB1, users.B1_coordinator]),
+    };
+
+    const routineItems: Record<string, string> = {
+      A1: await one(
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
+         values ($1,'A1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleA1]),
+      B1: await one(
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
+         values ($1,'B1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleB1]),
+    };
+
+    const completions: Record<string, string> = {
+      A1: await one(
+        `insert into public.completions (circle_id,routine_item_id,on_date,done_by)
+         values ($1,$2,current_date,$3) returning id`,
+        [circleA1, routineItems.A1, users.A1_caregiver_hired]),
+      B1: await one(
+        `insert into public.completions (circle_id,routine_item_id,on_date,done_by)
+         values ($1,$2,current_date,$3) returning id`,
+        [circleB1, routineItems.B1, users.B1_coordinator]),
+    };
+
+    const adhocTasks: Record<string, string> = {
+      // added_by the hired caregiver: the row a REMOVED caregiver must no
+      // longer be able to delete (delete-matrix).
+      A1: await one(
+        `insert into public.adhoc_tasks (circle_id,on_date,title,time_of_day,added_by)
+         values ($1,current_date,'A1 pharmacy run','14:00',$2) returning id`,
+        [circleA1, users.A1_caregiver_hired]),
+      B1: await one(
+        `insert into public.adhoc_tasks (circle_id,on_date,title,time_of_day,added_by)
+         values ($1,current_date,'B1 pharmacy run','14:00',$2) returning id`,
+        [circleB1, users.B1_coordinator]),
+    };
+
+    const invites: Record<string, string> = {
+      // pending (accepted_at null) — sel_invites is coordinator-only, so a
+      // plain family member of A1 must not see this token/email.
+      A1: await one(
+        `insert into public.invites (circle_id,email,role,token,invited_by)
+         values ($1,'pending-a1@example.com','caregiver',$2,$3) returning id`,
+        [circleA1, `tok-a1-${randomUUID()}`, users.A1_coordinator]),
+      B1: await one(
+        `insert into public.invites (circle_id,email,role,token,invited_by)
+         values ($1,'pending-b1@example.com','family',$2,$3) returning id`,
+        [circleB1, `tok-b1-${randomUUID()}`, users.B1_coordinator]),
+    };
+
+    return {
+      orgA, orgB, circleA1, circleA2, circleB1, users, checkins,
+      shifts, routineItems, completions, adhocTasks, invites,
+    };
   } finally {
     await c.end();
   }

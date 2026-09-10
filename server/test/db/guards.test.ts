@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "vitest";
-import { admin } from "./clients";
+import { admin, rawAsUser } from "./clients";
 import { loadFixture, type Fixture } from "./fixture";
 import { randomUUID } from "node:crypto";
 
@@ -48,23 +48,39 @@ describe("last-coordinator / owner guard", () => {
     // Without the lock both txns see "2 coordinators, removing me leaves 1" and
     // both commit -> 0. With the lock: A wins, B blocks, B re-evaluates against
     // A's committed state -> "removing me leaves 0" -> B RAISES. One survives.
-    const a = admin(), b = admin();
-    await a.connect(); await b.connect();
+    //
+    // Both connections are app_authenticated (NOT admin()): postgres has
+    // BYPASSRLS, under which the guard's `select circles ... for update` always
+    // took its lock. On the production role it silently matched zero rows and
+    // locked nothing until guard_member_removal() became SECURITY DEFINER, so
+    // an admin()-based version of this test passed while proving nothing.
+    // Each coordinator removes HERSELF — spec §5/C9's concurrent self-removal.
+    const a = await rawAsUser(fx.users.A2_coordinator);
+    const b = await rawAsUser(fx.users.twoCircle);
     try {
-      await a.query("begin"); await b.query("begin");
-      await a.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.A2_coordinator]);
-      const bPromise = b.query(`update public.circle_members set removed_at=now()
-        where circle_id=$1 and user_id=$2`, [fx.circleA2, fx.users.twoCircle]);
+      const removeSelf = (c: typeof a, uid: string) =>
+        c.query(`update public.circle_members set removed_at=now()
+                 where circle_id=$1 and user_id=$2 returning id`, [fx.circleA2, uid]);
+
+      const aResult = await removeSelf(a, fx.users.A2_coordinator);
+      expect(aResult.rowCount).toBe(1);          // A's removal really happened
+
+      const bPromise = removeSelf(b, fx.users.twoCircle);
       // prove B is actually waiting on A's lock: race it against a short timer.
       const timer = new Promise((res) => setTimeout(() => res("blocked"), 400));
       expect(await Promise.race([bPromise.then(() => "ran"), timer])).toBe("blocked");
+
       await a.query("commit");
       await expect(bPromise).rejects.toThrow(/last coordinator/i);
       await b.query("rollback");
-      const check = await a.query(`select count(*)::int n from public.circle_members
-        where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA2]);
-      expect(check.rows[0].n).toBe(1);
+
+      const check = await admin();
+      await check.connect();
+      try {
+        const r = await check.query(`select count(*)::int n from public.circle_members
+          where circle_id=$1 and role='coordinator' and removed_at is null`, [fx.circleA2]);
+        expect(r.rows[0].n).toBe(1);             // exactly one coordinator survived
+      } finally { await check.end(); }
     } finally { await a.end(); await b.end(); }
   });
 });
@@ -87,6 +103,33 @@ describe("immutability", () => {
         `update public.checkin_content set recorded_by=$1 where checkin_id=$2`,
         [fx.users.A1_family, fx.checkins.A1_circle],
       )).rejects.toThrow(/immutable/i);
+    } finally { await c.end(); }
+  });
+});
+
+describe("cross-table invariants enforced by the DB, not by 1b's discipline", () => {
+  test("a parent visibility change propagates to checkin_content", async () => {
+    const c = admin(); await c.connect();
+    try {
+      await c.query(`update public.checkins set visibility='coordinator' where id=$1`,
+        [fx.checkins.A1_family]);
+      const r = await c.query(
+        `select visibility from public.checkin_content where checkin_id=$1`,
+        [fx.checkins.A1_family]);
+      // the child's copy is the one that actually gates disclosure (D12)
+      expect(r.rows[0].visibility).toBe("coordinator");
+    } finally { await c.end(); }
+  });
+
+  test("soft-removing the elder's membership clears circles.elder_user_id", async () => {
+    const c = admin(); await c.connect();
+    try {
+      await c.query(`update public.circle_members set removed_at=now()
+                     where circle_id=$1 and user_id=$2`,
+        [fx.circleA1, fx.users.A1_elder]);
+      const r = await c.query(`select elder_user_id from public.circles where id=$1`,
+        [fx.circleA1]);
+      expect(r.rows[0].elder_user_id).toBeNull();
     } finally { await c.end(); }
   });
 });

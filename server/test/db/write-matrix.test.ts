@@ -109,6 +109,79 @@ describe("write matrix — column-scope triggers (committed state)", () => {
                where circle_id=$1 and user_id=$2`,
         [fx.circleA1, fx.users.A1_family]))));
 
+  test("created_at on a check-in cannot be rewritten (allow-list, not exclusion list)", async () => {
+    // was allowed: the trigger only enumerated mood/occurred_on/spoken_lang/
+    // created_via, so an unlisted column stayed mutable — an audit rewrite.
+    await denied(asUser(fx.users.A1_elder, (c) =>
+      c.query(`update public.checkins set created_at='1999-01-01' where id=$1`,
+        [fx.checkins.A1_elder_self])));
+  });
+
+  test("joined_at on a membership cannot be rewritten", async () => {
+    await denied(asUser(fx.users.A1_coordinator, (c) =>
+      c.query(`update public.circle_members set joined_at='1999-01-01'
+               where circle_id=$1 and user_id=$2`,
+        [fx.circleA1, fx.users.A1_family])));
+  });
+
+  test("created_at on a shift cannot be rewritten by the assigned caregiver", async () => {
+    await denied(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`update public.shifts set created_at='1999-01-01' where id=$1`,
+        [fx.shifts.A1])));
+  });
+
+  test("an elder the family tier does NOT admit cannot widen that check-in", async () => {
+    // A2_elder_notfamily is is_family_member=false, so the `family` tier does
+    // not admit her: she cannot read the content and must not re-tier it.
+    const seen = await asUser(fx.users.A2_elder_notfamily, (c) =>
+      c.query(`select checkin_id from public.checkin_content where checkin_id=$1`,
+        [fx.checkins.A2_family]));
+    expect(seen.rowCount, "she cannot read it").toBe(0);
+    const r = await asUser(fx.users.A2_elder_notfamily, (c) =>
+      c.query(`update public.checkins set visibility='circle' where id=$1 returning id`,
+        [fx.checkins.A2_family]));
+    expect(r.rowCount, "...so she cannot widen it either").toBe(0);
+  });
+
+  test("an elder the family tier DOES admit can still widen that check-in", async () => {
+    // the positive control for the test above: A1_elder is is_family_member.
+    const r = await asUser(fx.users.A1_elder, (c) =>
+      c.query(`update public.checkins set visibility='circle' where id=$1 returning id`,
+        [fx.checkins.A1_family]));
+    expect(r.rowCount).toBe(1);
+  });
+
+  test("a caregiver cannot attribute a completion to someone else", () =>
+    denied(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`insert into public.completions (circle_id,routine_item_id,on_date,done_by)
+               values ($1,$2,current_date + 1,$3)`,
+        [fx.circleA1, fx.routineItems.A1, fx.users.A1_coordinator]))));
+
+  test("a caregiver CAN record a completion attributed to themselves", async () => {
+    const r = await asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`insert into public.completions (circle_id,routine_item_id,on_date,done_by)
+               values ($1,$2,current_date + 1,$3) returning id`,
+        [fx.circleA1, fx.routineItems.A1, fx.users.A1_caregiver_hired]));
+    expect(r.rowCount).toBe(1);
+  });
+
+  test("a caregiver cannot attribute an ad-hoc task to someone else", () =>
+    denied(asUser(fx.users.A1_caregiver_hired, (c) =>
+      c.query(`insert into public.adhoc_tasks (circle_id,on_date,title,time_of_day,added_by)
+               values ($1,current_date,'forged','10:00',$2)`,
+        [fx.circleA1, fx.users.A1_coordinator]))));
+
+  test("a user CAN update their own profile but not anyone else's", async () => {
+    const own = await asUser(fx.users.A1_family, (c) =>
+      c.query(`update public.profiles set tos_accepted_at=now() where id=$1 returning id`,
+        [fx.users.A1_family]));
+    expect(own.rowCount, "own row").toBe(1);
+    const other = await asUser(fx.users.A1_family, (c) =>
+      c.query(`update public.profiles set full_name='x' where id=$1 returning id`,
+        [fx.users.A1_coordinator]));
+    expect(other.rowCount, "someone else's row").toBe(0);
+  });
+
   test("a soft-removed member then sees nothing (committed removal, fresh read)", async () => {
     await asUserCommitted(fx.users.A1_coordinator, (c) =>
       c.query(`update public.circle_members set removed_at = now()

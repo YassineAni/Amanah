@@ -48,6 +48,8 @@ create table public.shifts (
     check (checked_out_at is null or checked_in_at is not null)
 );
 create index shifts_circle_start_idx on public.shifts (circle_id, starts_at);
+-- upd_shifts' USING filters on caregiver_id per row
+create index shifts_caregiver_idx on public.shifts (caregiver_id);
 
 create trigger touch_checkins before update on public.checkins for each row execute function app.set_updated_at();
 create trigger touch_shifts   before update on public.shifts   for each row execute function app.set_updated_at();

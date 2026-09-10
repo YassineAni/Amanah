@@ -1,5 +1,12 @@
+-- SECURITY DEFINER (owner postgres, BYPASSRLS) is load-bearing, not cosmetic:
+-- as the invoking app_authenticated role the `select ... for update` below is
+-- RLS-filtered (circles has a SELECT policy but deliberately no UPDATE policy,
+-- and FOR UPDATE applies both), so it matched zero rows, took NO lock, and did
+-- not error — leaving spec §5/C9's serialisation absent on the only code path
+-- that performs a coordinator removal. Behaviour is otherwise unchanged: the
+-- body calls no auth.* and every identifier is public.-qualified.
 create or replace function app.guard_member_removal()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger language plpgsql security definer set search_path = '' as $$
 declare
   owner uuid;
   remaining_coordinators int;

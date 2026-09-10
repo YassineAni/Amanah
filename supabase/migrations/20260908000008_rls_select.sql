@@ -22,7 +22,10 @@ create policy sel_completions  on public.completions     for select to app_authe
 create policy sel_adhoc        on public.adhoc_tasks     for select to app_authenticated using (app.is_member(circle_id));
 create policy sel_circles      on public.circles         for select to app_authenticated using (app.is_member(id));
 create policy sel_circle_members on public.circle_members for select to app_authenticated using (app.is_member(circle_id));
-create policy sel_invites      on public.invites         for select to app_authenticated using (app.is_member(circle_id));
+-- invites carries the bearer `token` and the invitee's `email`; RLS cannot hide
+-- a column, so the ROW is coordinator-only. (§6 keeps the email out of the
+-- public GET /api/invites/:token response — this keeps it out of the circle.)
+create policy sel_invites      on public.invites         for select to app_authenticated using (app.circle_role(circle_id) = 'coordinator');
 
 -- organizations: the owner, OR any member of one of its circles (so invited
 -- staff can read is_demo for GET /api/me). (spec §5 / C8)
@@ -47,3 +50,10 @@ create policy sel_profiles on public.profiles for select to app_authenticated
         and them.user_id = public.profiles.id and them.removed_at is null
     )
   );
+
+-- profiles: UPDATE own row only (spec §5). Without this the request pool
+-- cannot write tos_accepted_at / privacy_notice_version / ui_lang (§6) and
+-- 1b would have to move user-profile writes onto the service_role pool.
+create policy upd_profiles on public.profiles for update to app_authenticated
+  using (id = (select auth.uid()))
+  with check (id = (select auth.uid()));

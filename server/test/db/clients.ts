@@ -96,6 +96,27 @@ export const asUser = <T>(userId: string, fn: (c: Client) => Promise<T>) =>
 export const asUserCommitted = <T>(userId: string, fn: (c: Client) => Promise<T>) =>
   withClaims(userId, fn, "commit");
 
+/** app_authenticated in an OPEN transaction with `userId`'s claims set.
+ *  The CALLER owns the client: run statements, then commit()/rollback() and
+ *  end(). Unlike asUser (always rolls back) and asUserCommitted (commits when
+ *  the callback returns), this can hold two RLS-subject transactions open
+ *  across an interleaving — which is the only way to observe a row lock. */
+export async function rawAsUser(userId: string): Promise<Client> {
+  const email = await emailFor(userId);
+  const c = new Client({ connectionString: APP_URL });
+  await c.connect();
+  try {
+    await c.query("begin");
+    await c.query("select set_config('request.jwt.claims', $1, true)", [
+      JSON.stringify({ sub: userId, role: "authenticated", email }),
+    ]);
+    return c;
+  } catch (e) {
+    await c.end().catch(() => {});
+    throw e;
+  }
+}
+
 export async function mintJwt(claims: { sub: string; email: string }): Promise<string> {
   return new SignJWT({ ...claims, role: "authenticated" })
     .setProtectedHeader({ alg: "HS256" })

@@ -41,16 +41,25 @@ create trigger freeze_completions before update on public.completions for each r
 create trigger freeze_adhoc       before update on public.adhoc_tasks for each row execute function app.freeze_authored_by();
 
 -- A saved check-in's UPDATE may change visibility ONLY. (spec §5) ---------
+-- ALLOW-LIST, not an exclusion list: everything except {visibility,
+-- updated_at} is guarded explicitly, so an unlisted column is immutable by
+-- default. (As an exclusion list, `created_at` and `id` were writable — an
+-- audit-trail rewrite.)
 create or replace function app.checkins_column_scope()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if (select auth.uid()) is null then
     return new;
   end if;
-  if new.mood is distinct from old.mood
+  if new.id is distinct from old.id
+     or new.circle_id is distinct from old.circle_id
      or new.occurred_on is distinct from old.occurred_on
+     or new.mood is distinct from old.mood
      or new.spoken_lang is distinct from old.spoken_lang
-     or new.created_via is distinct from old.created_via then
+     or new.recorded_by is distinct from old.recorded_by
+     or new.is_proxy is distinct from old.is_proxy
+     or new.created_via is distinct from old.created_via
+     or new.created_at is distinct from old.created_at then
     raise exception 'only visibility may change on a saved check-in';
   end if;
   return new;
@@ -79,8 +88,9 @@ begin
     end if;
     if new.circle_id is distinct from old.circle_id
        or new.recorded_by is distinct from old.recorded_by
-       or new.is_proxy is distinct from old.is_proxy then
-      raise exception 'circle_id / recorded_by / is_proxy are immutable on checkin_content';
+       or new.is_proxy is distinct from old.is_proxy
+       or new.created_at is distinct from old.created_at then
+      raise exception 'circle_id / recorded_by / is_proxy / created_at are immutable on checkin_content';
     end if;
     -- visibility may only move in lockstep with the parent
     new.visibility := parent.visibility;
@@ -103,12 +113,18 @@ begin
   if app.circle_role(new.circle_id) = 'coordinator' then
     return new;  -- coordinator may change anything the policy allowed
   end if;
-  if new.caregiver_id is distinct from old.caregiver_id
+  -- ALLOW-LIST: a caregiver may touch only {checked_in_at, checked_out_at}
+  -- (+ updated_at, set by the touch trigger). Everything else is guarded
+  -- explicitly so a column added in 1b/1c is immutable by default.
+  if new.id is distinct from old.id
+     or new.circle_id is distinct from old.circle_id
      or new.starts_at is distinct from old.starts_at
      or new.ends_at is distinct from old.ends_at
+     or new.caregiver_id is distinct from old.caregiver_id
      or new.purpose is distinct from old.purpose
      or new.activity_tags is distinct from old.activity_tags
-     or new.coordinator_note is distinct from old.coordinator_note then
+     or new.coordinator_note is distinct from old.coordinator_note
+     or new.created_at is distinct from old.created_at then
     raise exception 'a caregiver may only change checked_in_at / checked_out_at';
   end if;
   return new;
@@ -125,11 +141,16 @@ begin
   if (select auth.uid()) is null then
     return new;
   end if;
-  if new.role is distinct from old.role
-     or new.is_family_member is distinct from old.is_family_member
-     or new.user_id is distinct from old.user_id
+  -- ALLOW-LIST: only {removed_at, updated_at} may differ. (As an exclusion
+  -- list, `joined_at` / `id` / `created_at` were writable.)
+  if new.id is distinct from old.id
      or new.circle_id is distinct from old.circle_id
-     or new.invited_by is distinct from old.invited_by then
+     or new.user_id is distinct from old.user_id
+     or new.role is distinct from old.role
+     or new.is_family_member is distinct from old.is_family_member
+     or new.invited_by is distinct from old.invited_by
+     or new.joined_at is distinct from old.joined_at
+     or new.created_at is distinct from old.created_at then
     raise exception 'only removed_at may change on circle_members';
   end if;
   return new;
@@ -160,3 +181,44 @@ create constraint trigger circles_elder_consistency
   after update of elder_user_id on public.circles
   deferrable initially deferred
   for each row execute function app.assert_elder_consistency();
+
+-- ...and the other half of the same invariant: soft-removing the elder's
+-- membership must clear circles.elder_user_id, or the circle keeps pointing at
+-- a user who has no elder membership. Nothing watched circle_members before.
+-- SECURITY DEFINER (owner postgres): circles deliberately has NO UPDATE policy
+-- for app_authenticated, so an INVOKER function could not write it. No auth.*
+-- in the body; every identifier is public.-qualified.
+create or replace function app.sync_elder_on_removal()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  update public.circles set elder_user_id = null where id = old.circle_id;
+  return null;
+end $$;
+
+create trigger circle_members_sync_elder
+  after update of removed_at on public.circle_members
+  for each row
+  when (old.role = 'elder' and old.removed_at is null and new.removed_at is not null)
+  execute function app.sync_elder_on_removal();
+
+-- checkin_content.visibility is the column that actually gates disclosure
+-- (D12), and it only ever re-synced when the CHILD was updated — so a parent
+-- visibility change left the child on the old tier. Enforce the lockstep in
+-- the DB rather than relying on 1b issuing both statements. (D6)
+-- SECURITY DEFINER (owner postgres): must write past checkin_content's tier
+-- policy. The child UPDATE fires denorm_checkin_content, which re-reads the
+-- parent and assigns the SAME value — a no-op, and no further cascade.
+create or replace function app.propagate_checkin_visibility()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  update public.checkin_content
+     set visibility = new.visibility
+   where checkin_id = new.id;
+  return null;
+end $$;
+
+create trigger checkins_propagate_visibility
+  after update of visibility on public.checkins
+  for each row
+  when (old.visibility is distinct from new.visibility)
+  execute function app.propagate_checkin_visibility();

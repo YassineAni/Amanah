@@ -2,10 +2,15 @@
 -- (trigger 013 limits them to checked_in_at / checked_out_at).
 create policy ins_shifts on public.shifts for insert to app_authenticated
   with check (app.circle_role(circle_id) = 'coordinator');
+-- `app.is_member(circle_id) and (...)`: the `caregiver_id = auth.uid()` branch
+-- carries no membership predicate, so without the gate a soft-removed
+-- caregiver keeps UPDATE on shifts they were assigned to.
 create policy upd_shifts on public.shifts for update to app_authenticated
   using (
-    app.circle_role(circle_id) = 'coordinator'
-    or caregiver_id = (select auth.uid())
+    app.is_member(circle_id) and (
+      app.circle_role(circle_id) = 'coordinator'
+      or caregiver_id = (select auth.uid())
+    )
   )
   with check (
     app.circle_role(circle_id) = 'coordinator'
@@ -23,9 +28,13 @@ create policy upd_routine on public.routine_items for update to app_authenticate
 create policy del_routine on public.routine_items for delete to app_authenticated
   using (app.circle_role(circle_id) = 'coordinator');
 
--- completions: coordinator or caregiver.
+-- completions: coordinator or caregiver. `done_by` is bound to the caller so
+-- the (immutable) attribution cannot be forged at insert time.
 create policy ins_completions on public.completions for insert to app_authenticated
-  with check (app.circle_role(circle_id) in ('coordinator','caregiver'));
+  with check (
+    app.circle_role(circle_id) in ('coordinator','caregiver')
+    and done_by = (select auth.uid())
+  );
 create policy upd_completions on public.completions for update to app_authenticated
   using (app.circle_role(circle_id) in ('coordinator','caregiver'))
   with check (app.circle_role(circle_id) in ('coordinator','caregiver'));
@@ -35,12 +44,19 @@ create policy del_completions on public.completions for delete to app_authentica
 -- adhoc_tasks: coordinator or caregiver may add/complete; delete is
 -- coordinator OR the person who added it.
 create policy ins_adhoc on public.adhoc_tasks for insert to app_authenticated
-  with check (app.circle_role(circle_id) in ('coordinator','caregiver'));
+  with check (
+    app.circle_role(circle_id) in ('coordinator','caregiver')
+    and added_by = (select auth.uid())
+  );
 create policy upd_adhoc on public.adhoc_tasks for update to app_authenticated
   using (app.circle_role(circle_id) in ('coordinator','caregiver'))
   with check (app.circle_role(circle_id) in ('coordinator','caregiver'));
+-- membership gate: the `added_by = auth.uid()` branch must not survive a
+-- soft removal (same class as upd_shifts / upd_checkins above).
 create policy del_adhoc on public.adhoc_tasks for delete to app_authenticated
   using (
-    app.circle_role(circle_id) = 'coordinator'
-    or added_by = (select auth.uid())
+    app.is_member(circle_id) and (
+      app.circle_role(circle_id) = 'coordinator'
+      or added_by = (select auth.uid())
+    )
   );
