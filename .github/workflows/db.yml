@@ -1,0 +1,27 @@
+name: db
+
+on:
+  pull_request:
+    paths: ["supabase/**", "server/**", ".github/workflows/db.yml"]
+  push:
+    branches: [main]
+    paths: ["supabase/**", "server/**"]
+
+jobs:
+  rls-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - uses: supabase/setup-cli@v1
+        with: { version: latest }
+      - run: supabase start
+      - name: Apply migrations twice (idempotency)
+        run: |
+          supabase db reset
+          supabase db reset
+      - run: npm --prefix server ci
+      - run: npm --prefix server run test:db
+      - if: always()
+        run: supabase stop
