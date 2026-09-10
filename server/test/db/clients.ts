@@ -2,13 +2,18 @@ import { execSync } from "node:child_process";
 import { Client } from "pg";
 import { SignJWT } from "jose";
 
-const ADMIN_URL = "postgresql://postgres:postgres@127.0.0.1:54122/postgres";
-const APP_URL = "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres";
-const API_URL = "http://127.0.0.1:54121";
+// Local dev connection strings. Ports are the winnat-remapped 541xx set this
+// machine uses (spec §10 D-log addendum / 1b handoff invariant #10); CI runs on
+// the Supabase defaults and overrides via real env vars. Exported so the 1b
+// vitest env-setup has ONE source for these — src/config.ts keeps the default
+// ports the plan specifies and never needs a local-vs-CI divergence.
+export const ADMIN_URL = "postgresql://postgres:postgres@127.0.0.1:54122/postgres";
+export const APP_URL = "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres";
+export const API_URL = "http://127.0.0.1:54121";
 // Local Supabase fixed dev secret (supabase/config.toml [auth].jwt_secret default).
-const JWT_SECRET = new TextEncoder().encode(
-  "super-secret-jwt-token-with-at-least-32-characters-long",
-);
+export const JWT_SECRET_STRING =
+  "super-secret-jwt-token-with-at-least-32-characters-long";
+const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
 
 // The classic Supabase demo anon key. Kept as a fallback, but THIS CLI
 // version signs a different anon JWT (the hardcoded one 401s against the
