@@ -4,6 +4,7 @@ import { env } from "../config.js";
 import { metaRouter } from "../routes/meta.js";
 import { accountRouter } from "../routes/account.js";
 import { circlesRouter } from "../routes/circles.js";
+import { invitesRouter } from "../routes/invites.js";
 
 export function createApp(): express.Express {
   const app = express();
@@ -17,7 +18,8 @@ export function createApp(): express.Express {
   app.use("/api", metaRouter);
   app.use("/api", accountRouter);
   app.use("/api", circlesRouter);
-  // subsequent tasks add: invitesRouter,
+  app.use("/api", invitesRouter);
+  // subsequent tasks add:
   // checkinsRouter, careSignalRouter, shiftsRouter, planRouter, routineRouter,
   // ttsRouter — each mounted here.
 
