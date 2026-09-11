@@ -1,8 +1,21 @@
 import { Router } from "express";
 import { requireAuth, requireNoticeAccepted, type AuthedRequest } from "../auth/middleware.js";
 import { requireCircle } from "../auth/circle.js";
-import { withUserTxn } from "../db/pool.js";
+import { withUserTxn, type Querier } from "../db/pool.js";
+import { windowDates } from "../domain/careSignal.js";
 import { asyncHandler } from "../http/asyncHandler.js";
+
+// The Postgres column default (current_date) resolves in the DB session's
+// timezone (UTC here, unset elsewhere), not the circle's — near local
+// midnight that can silently misdate a new/replacement row by one day
+// relative to what the coordinator saw. Every other "what day is it for
+// this circle" computation in this codebase goes through windowDates(tz);
+// mirror that here instead of relying on the column default.
+async function circleToday(q: Querier, cid: string): Promise<string> {
+  const tz = (await q.query(`select timezone from public.circles where id = $1`, [cid]))
+    .rows[0]?.timezone ?? "UTC";
+  return windowDates(tz)[6];
+}
 
 export const routineRouter = Router({ mergeParams: true });
 routineRouter.use(requireAuth, requireNoticeAccepted, requireCircle("coordinator"));
@@ -30,14 +43,15 @@ routineRouter.post("/routine", asyncHandler<AuthedRequest>(async (req, res) => {
   if (!String(b.title ?? "").trim() || !isTime(b.time) || weekdays.length === 0) {
     return res.status(400).json({ error: "title, HH:MM time, and weekdays[] are required" });
   }
-  const r = await withUserTxn(req.claims, (q) =>
-    q.query(
-      `insert into public.routine_items (circle_id, title, time_of_day, category, time_sensitive, weekdays)
-       values ($1,$2,$3,$4,$5,$6) returning id, title, time_of_day::text, category, time_sensitive, weekdays, effective_from::text`,
+  const r = await withUserTxn(req.claims, async (q) => {
+    const today = await circleToday(q, req.params.cid);
+    return q.query(
+      `insert into public.routine_items (circle_id, title, time_of_day, category, time_sensitive, weekdays, effective_from)
+       values ($1,$2,$3,$4,$5,$6,$7) returning id, title, time_of_day::text, category, time_sensitive, weekdays, effective_from::text`,
       [req.params.cid, String(b.title).trim().slice(0, 120), b.time,
-       CATS.has(b.category) ? b.category : "other", !!b.time_sensitive, weekdays],
-    ),
-  );
+       CATS.has(b.category) ? b.category : "other", !!b.time_sensitive, weekdays, today],
+    );
+  });
   res.status(201).json(r.rows[0]);
 }));
 
@@ -49,7 +63,11 @@ routineRouter.patch("/routine/:id", asyncHandler<AuthedRequest>(async (req, res)
       `select * from public.routine_items where id = $1 and circle_id = $2 and archived_at is null`,
       [req.params.id, cid])).rows[0];
     if (!cur) throw Object.assign(new Error("no such routine item"), { status: 404 });
-    await q.query(`update public.routine_items set archived_at = now() where id = $1`, [cur.id]);
+    const today = await circleToday(q, cid);
+    await q.query(
+      `update public.routine_items set archived_at = now() where id = $1 and circle_id = $2`,
+      [cur.id, cid],
+    );
     const merged = {
       title: typeof b.title === "string" && b.title.trim() ? b.title.trim().slice(0, 120) : cur.title,
       time: isTime(b.time) ? b.time : cur.time_of_day,
@@ -58,10 +76,10 @@ routineRouter.patch("/routine/:id", asyncHandler<AuthedRequest>(async (req, res)
       weekdays: Array.isArray(b.weekdays) && b.weekdays.length ? cleanWeekdays(b.weekdays) : cur.weekdays,
     };
     const ins = await q.query(
-      `insert into public.routine_items (circle_id, title, time_of_day, category, time_sensitive, weekdays)
-       values ($1,$2,$3,$4,$5,$6)
+      `insert into public.routine_items (circle_id, title, time_of_day, category, time_sensitive, weekdays, effective_from)
+       values ($1,$2,$3,$4,$5,$6,$7)
        returning id, title, time_of_day::text, category, time_sensitive, weekdays, effective_from::text`,
-      [cid, merged.title, merged.time, merged.category, merged.time_sensitive, merged.weekdays],
+      [cid, merged.title, merged.time, merged.category, merged.time_sensitive, merged.weekdays, today],
     );
     return ins.rows[0];
   });

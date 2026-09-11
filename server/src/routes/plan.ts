@@ -14,9 +14,20 @@ const isTime = (v: unknown) => typeof v === "string" && /^\d{2}:\d{2}$/.test(v);
 
 async function loadPlan(q: Querier, cid: string, date: string) {
   const routine = (await q.query(
-    `select id, title, time_of_day::text, category, time_sensitive, weekdays,
-            effective_from::text, archived_at
-     from public.routine_items where circle_id = $1`, [cid])).rows;
+    // archived_at is timestamptz; node-pg parses a bare column of that type
+    // as a JS Date, not a string (the same bug class fixed in checkins.ts's
+    // GET /today — expandDay does archived_at.slice(0,10), which Date has
+    // no method for). Cast to a "YYYY-MM-DD" string AND render it in the
+    // circle's own timezone (not the DB session's, which defaults to UTC),
+    // matching effective_from's timezone-aware default and windowDates(tz)
+    // elsewhere — otherwise an edit near local midnight can land on the
+    // wrong side of the archive/effective boundary for the circle's actual
+    // "today".
+    `select ri.id, ri.title, ri.time_of_day::text, ri.category, ri.time_sensitive, ri.weekdays,
+            ri.effective_from::text,
+            (ri.archived_at at time zone c.timezone)::date::text as archived_at
+     from public.routine_items ri join public.circles c on c.id = ri.circle_id
+     where ri.circle_id = $1`, [cid])).rows;
   const completions = (await q.query(
     `select cp.routine_item_id, cp.on_date::text, cp.done_at, cp.done_by,
             p.full_name as done_by_name, cp.note
@@ -29,7 +40,7 @@ async function loadPlan(q: Querier, cid: string, date: string) {
      join public.profiles ap on ap.id = a.added_by
      left join public.profiles dp on dp.id = a.done_by
      where a.circle_id = $1 and a.on_date = $2`, [cid, date])).rows;
-  return expandDay(date, routine as any, completions as any, adhoc as any);
+  return expandDay(date, routine, completions, adhoc);
 }
 
 planRouter.get("/plan", asyncHandler<AuthedRequest>(async (req, res) => {
@@ -56,6 +67,26 @@ planRouter.post("/plan/toggle", asyncHandler<AuthedRequest>(async (req, res) => 
     if (key.startsWith("r:")) {
       const rid = key.slice(2);
       if (done) {
+        // Guard against writing a completion against a routine item that
+        // isn't actually visible on `date` (e.g. it was archived by a
+        // PATCH after this client loaded its view of `date`, or `date` is
+        // before the item's effective_from) — without this, the insert
+        // still succeeds (only the FK needs satisfying, and an archived
+        // row still exists), but expandDay's window filter means the
+        // completion silently never shows up on ANY date's view: not
+        // today's (the edited/current version doesn't match this
+        // routine_item_id), not the past date either (nothing re-reads it
+        // unless this check runs). Same in-window test expandDay applies.
+        const inWindow = await q.query(
+          `select 1 from public.routine_items ri join public.circles c on c.id = ri.circle_id
+           where ri.id = $1 and ri.circle_id = $2
+             and ri.effective_from <= $3::date
+             and (ri.archived_at is null or (ri.archived_at at time zone c.timezone)::date > $3::date)`,
+          [rid, cid, date],
+        );
+        if (inWindow.rowCount === 0) {
+          throw Object.assign(new Error("this routine item is not active on that date"), { status: 404 });
+        }
         await q.query(
           `insert into public.completions (circle_id, routine_item_id, on_date, done_by, note)
            values ($1,$2,$3,$4,$5)
