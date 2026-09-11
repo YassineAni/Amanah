@@ -21,37 +21,54 @@ invitesRouter.post(
     const items = Array.isArray(req.body?.invites) ? req.body.invites : [];
     if (!items.length) return res.status(400).json({ error: "invites[] required" });
 
-    const out: { id: string; email: string; role: string }[] = [];
+    // Validate the whole batch before writing anything.
+    const parsed: { email: string; role: string; isFam: boolean; token: string }[] = [];
     for (const raw of items) {
       const email = String(raw.email ?? "").trim().toLowerCase();
       const role = String(raw.role ?? "");
       const isFam = raw.is_family_member !== false;
       if (!EMAIL.test(email)) return res.status(400).json({ error: `bad email: ${raw.email}` });
       if (!ROLES.has(role)) return res.status(400).json({ error: `bad role: ${role}` });
-      const token = (randomUUID() + randomUUID()).replace(/-/g, "");
+      parsed.push({ email, role, isFam, token: (randomUUID() + randomUUID()).replace(/-/g, "") });
+    }
 
-      try {
-        const row = await withUserTxn(claims, (q) =>
-          q.query(
+    // Insert the whole batch in ONE transaction: a duplicate-pending
+    // conflict on item N rolls back items 1..N-1 too, instead of leaving a
+    // partially-inserted (and partially-emailed) batch the client has no
+    // clean way to retry — a per-item txn+email loop can silently strand a
+    // completed invite (row inserted, email already sent) behind a 409 for
+    // the request as a whole.
+    let rows: { id: string; email: string; role: string }[];
+    try {
+      rows = await withUserTxn(claims, async (q) => {
+        const out: { id: string; email: string; role: string }[] = [];
+        for (const p of parsed) {
+          out.push((await q.query(
             `insert into public.invites (circle_id, email, role, is_family_member, token, invited_by)
              values ($1,$2,$3,$4,$5,$6) returning id, email, role`,
-            [cid, email, role, isFam, token, claims.sub],
-          ),
-        );
-        out.push(row.rows[0]);
-      } catch (e: any) {
-        if (String(e?.message).includes("invites_one_pending_per_email")) {
-          return res.status(409).json({ error: `already invited: ${email}` });
+            [cid, p.email, p.role, p.isFam, p.token, claims.sub],
+          )).rows[0]);
         }
-        throw e;
+        return out;
+      });
+    } catch (e: any) {
+      if (String(e?.message).includes("invites_one_pending_per_email")) {
+        // The whole txn rolled back — nothing from this batch was inserted.
+        return res.status(409).json({ error: "one or more emails already have a pending invite" });
       }
+      throw e;
+    }
 
-      await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
-        data: { circle_id: cid, role, is_family_member: isFam },
-        redirectTo: `${env.APP_ORIGIN}/invite/${token}`,
+    // Only send email once every row is durably committed. A delivery
+    // failure partway through is a resend problem, not a data-integrity
+    // one — the rows already exist and the client got a 201 with them.
+    for (const p of parsed) {
+      await supabaseAdmin.auth.admin.inviteUserByEmail(p.email, {
+        data: { circle_id: cid, role: p.role, is_family_member: p.isFam },
+        redirectTo: `${env.APP_ORIGIN}/invite/${p.token}`,
       });
     }
-    res.status(201).json({ invites: out });
+    res.status(201).json({ invites: rows });
   }),
 );
 

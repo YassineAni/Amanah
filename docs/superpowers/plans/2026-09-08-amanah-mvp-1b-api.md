@@ -16,7 +16,7 @@ Every task's requirements implicitly include this section. Values copied verbati
 
 - **`DATABASE_URL` (the request pool) is a direct connection (port 5432) or a session-pinned pool — never the transaction pooler (6543)** (§3, §10, D20).
 - **`withUserTxn(claims, fn)` is the only way to run a user-scoped query.** It binds the claims JSON as `$1` to `set_config('request.jwt.claims', $1, true)` — never string-interpolated — wraps the work in one `BEGIN…COMMIT`, and the connection runs `DISCARD ALL` on release (§3, C3).
-- **`adminPool` is never reachable from a browser-facing code path** other than the four listed uses: create circle, accept invite, delete circle, demo seed (§3).
+- **`adminPool` is never reachable from a browser-facing code path** other than the four listed uses: create circle, accept invite, delete circle, demo seed (§3). **Addendum (Tasks 6-10 review):** `GET /api/invites/:token` (Task 9) is a fifth, intentional exception — it's an unauthenticated preview route with no `claims`, so `withUserTxn` isn't an option there. Not a violation; named here so it isn't chased as one.
 - **Every `/api/circles/:cid/*` handler filters `circle_id = :cid` in its SQL** in addition to relying on RLS — RLS scopes to *your circles*, not one circle (§5, C5).
 - Auth is **magic link only** — no password endpoints (§6, D17). UI language is **EN only** for the MVP (D9); `spoken_lang` for voice is free per check-in.
 - **`POST /api/tts` requires `Authorization` and is throttled per user id**, not per token string (§7, S5).
