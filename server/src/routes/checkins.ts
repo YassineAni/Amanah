@@ -99,25 +99,38 @@ checkinsRouter.post(
 checkinsRouter.post("/checkins", asyncHandler<AuthedRequest>(async (req, res) => {
   const cid = req.params.cid;
   const { claims, membership } = req;
+  // Same gate as /checkins/transcribe. Without this, a 'family' role member
+  // (a real, non-privileged circle_role) reaches the DB write policy
+  // (ins_checkins/ins_checkin_content require elder/coordinator/caregiver),
+  // which throws 42501 -- a 500, not a clean 403, for a routine
+  // authorization rejection RLS was always going to make anyway.
+  if (!["elder", "coordinator", "caregiver"].includes(membership!.role)) {
+    return res.status(403).json({ error: "your role cannot record check-ins" });
+  }
   const b = req.body ?? {};
   if (!MOODS.has(b.mood)) return res.status(400).json({ error: "mood must be good|ok|hard" });
   const visibility = VIS.has(b.visibility) ? b.visibility : "family";
   const isProxy = membership!.role !== "elder";
   const stagingPath: string | null = typeof b.staging_path === "string" ? b.staging_path : null;
-  if (stagingPath && !stagingPath.startsWith(`${cid}/staging/`)) {
+  // Full allow-list match, not just a prefix check: `startsWith` alone
+  // admits e.g. "<cid>/staging/../../<otherCid>/staging/x" today (harmless
+  // only because uploadStaging/promoteStaging are still Part-1c stubs with
+  // no real filesystem/Storage path underneath them yet).
+  const STAGING_PATH = new RegExp(`^${cid}/staging/[A-Za-z0-9._-]+$`);
+  if (stagingPath && !STAGING_PATH.test(stagingPath)) {
     return res.status(400).json({ error: "staging_path does not belong to this circle" });
   }
   const out = await withUserTxn(claims, async (q) => {
     let audioPath: string | null = null;
     if (stagingPath) audioPath = await promoteStaging(stagingPath);
-    const tzToday = (await q.query(
-      `select to_char((now() at time zone c.timezone)::date, 'YYYY-MM-DD') d
-       from public.circles c where c.id = $1`, [cid])).rows[0].d;
+    const circle = (await q.query(
+      `select to_char((now() at time zone c.timezone)::date, 'YYYY-MM-DD') as today, c.elder_lang
+       from public.circles c where c.id = $1`, [cid])).rows[0];
     const cin = await q.query(
       `insert into public.checkins
          (circle_id, occurred_on, mood, spoken_lang, visibility, recorded_by, is_proxy, created_via)
        values ($1, $2, $3, $4, $5, $6, $7, 'live') returning id`,
-      [cid, b.occurred_on || tzToday, b.mood, resolveSpokenLang(b.spoken_lang, "ar"),
+      [cid, b.occurred_on || circle.today, b.mood, resolveSpokenLang(b.spoken_lang, circle.elder_lang),
        visibility, claims.sub, isProxy],
     );
     await q.query(
