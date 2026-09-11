@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { requireAuth, requireNoticeAccepted, type AuthedRequest } from "../auth/middleware.js";
+import { requireCircle } from "../auth/circle.js";
 import { withAdminTxn, withUserTxn } from "../db/pool.js";
 import { asyncHandler } from "../http/asyncHandler.js";
+import { deleteCircleAudio } from "../storage/audio.js";
 
 export const circlesRouter = Router();
 
@@ -55,5 +57,47 @@ circlesRouter.post(
     });
 
     res.status(201).json({ circle });
+  }),
+);
+
+circlesRouter.delete(
+  "/circles/:cid",
+  requireAuth, requireCircle("coordinator"),
+  asyncHandler<AuthedRequest>(async (req, res) => {
+    const { claims } = req;
+    const cid = req.params.cid;
+    const owns = await withUserTxn(claims, (q) =>
+      q.query(
+        `select 1 from public.circles c join public.organizations o on o.id = c.org_id
+         where c.id = $1 and o.owner_user_id = $2`, [cid, claims.sub],
+      ),
+    );
+    if (owns.rowCount === 0) return res.status(403).json({ error: "only the org owner can delete a circle" });
+    await withAdminTxn((q) => q.query(`delete from public.circles where id = $1`, [cid]));
+    await deleteCircleAudio(cid);
+    res.status(204).end();
+  }),
+);
+
+circlesRouter.delete(
+  "/circles/:cid/members/:userId",
+  requireAuth, requireCircle("coordinator"),
+  asyncHandler<AuthedRequest>(async (req, res, next) => {
+    try {
+      const r = await withUserTxn(req.claims, (q) =>
+        q.query(
+          `update public.circle_members set removed_at = now()
+           where circle_id = $1 and user_id = $2 and removed_at is null returning id`,
+          [req.params.cid, req.params.userId],
+        ),
+      );
+      if (r.rowCount === 0) return res.status(404).json({ error: "no such active member" });
+      res.status(204).end();
+    } catch (e: any) {
+      if (/last coordinator|organization owner/i.test(e.message)) {
+        return res.status(409).json({ error: e.message });
+      }
+      next(e);
+    }
   }),
 );
