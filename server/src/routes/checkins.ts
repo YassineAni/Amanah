@@ -1,9 +1,12 @@
+import multer from "multer";
 import { Router } from "express";
 import { requireAuth, requireNoticeAccepted, type AuthedRequest } from "../auth/middleware.js";
 import { requireCircle } from "../auth/circle.js";
 import { withUserTxn } from "../db/pool.js";
 import { windowDates } from "../domain/careSignal.js";
 import { utterances } from "../domain/utterances.js";
+import { resolveSpokenLang, demoTranscribe, liveTranscribe } from "../domain/transcribe.js";
+import { uploadStaging, promoteStaging, signedUrl } from "../storage/audio.js";
 import { asyncHandler } from "../http/asyncHandler.js";
 
 export const checkinsRouter = Router({ mergeParams: true });
@@ -57,4 +60,110 @@ checkinsRouter.get("/today", asyncHandler<AuthedRequest>(async (req, res) => {
     };
   });
   res.json(data);
+}));
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+const MOODS = new Set(["good", "ok", "hard"]);
+const VIS = new Set(["circle", "family", "coordinator", "mood_only"]);
+const extFor = (m: string) =>
+  m.includes("mp4") || m.includes("m4a") ? "m4a"
+  : m.includes("mpeg") || m.includes("mp3") ? "mp3"
+  : m.includes("wav") ? "wav" : m.includes("ogg") ? "ogg" : "webm";
+
+checkinsRouter.post(
+  "/checkins/transcribe",
+  upload.single("audio"),
+  asyncHandler<AuthedRequest>(async (req, res) => {
+    const cid = req.params.cid;
+    const { claims, membership } = req;
+    if (!["elder", "coordinator", "caregiver"].includes(membership!.role)) {
+      return res.status(403).json({ error: "your role cannot record check-ins" });
+    }
+    const elderLang = await withUserTxn(claims, (q) =>
+      q.query(`select elder_lang from public.circles where id = $1`, [cid]),
+    ).then((r) => r.rows[0]?.elder_lang ?? "ar");
+    const spokenLang = resolveSpokenLang(req.body?.spoken_lang, elderLang);
+
+    if (req.body?.demoUtteranceId) {
+      const r = demoTranscribe(String(req.body.demoUtteranceId));
+      return res.json({ ...r, staging_path: null });
+    }
+    if (!req.file) return res.status(400).json({ error: "no audio and no demoUtteranceId" });
+    const r = await liveTranscribe(req.file.buffer, req.file.originalname || "audio.webm",
+      req.file.mimetype || "audio/webm", spokenLang);
+    const staging_path = await uploadStaging(cid, req.file.buffer, extFor(req.file.mimetype || ""));
+    res.json({ ...r, staging_path });
+  }),
+);
+
+checkinsRouter.post("/checkins", asyncHandler<AuthedRequest>(async (req, res) => {
+  const cid = req.params.cid;
+  const { claims, membership } = req;
+  const b = req.body ?? {};
+  if (!MOODS.has(b.mood)) return res.status(400).json({ error: "mood must be good|ok|hard" });
+  const visibility = VIS.has(b.visibility) ? b.visibility : "family";
+  const isProxy = membership!.role !== "elder";
+  const stagingPath: string | null = typeof b.staging_path === "string" ? b.staging_path : null;
+  if (stagingPath && !stagingPath.startsWith(`${cid}/staging/`)) {
+    return res.status(400).json({ error: "staging_path does not belong to this circle" });
+  }
+  const out = await withUserTxn(claims, async (q) => {
+    let audioPath: string | null = null;
+    if (stagingPath) audioPath = await promoteStaging(stagingPath);
+    const tzToday = (await q.query(
+      `select to_char((now() at time zone c.timezone)::date, 'YYYY-MM-DD') d
+       from public.circles c where c.id = $1`, [cid])).rows[0].d;
+    const cin = await q.query(
+      `insert into public.checkins
+         (circle_id, occurred_on, mood, spoken_lang, visibility, recorded_by, is_proxy, created_via)
+       values ($1, $2, $3, $4, $5, $6, $7, 'live') returning id`,
+      [cid, b.occurred_on || tzToday, b.mood, resolveSpokenLang(b.spoken_lang, "ar"),
+       visibility, claims.sub, isProxy],
+    );
+    await q.query(
+      `insert into public.checkin_content (checkin_id, circle_id, visibility, recorded_by, is_proxy,
+         transcript, translation, audio_path)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [cin.rows[0].id, cid, visibility, claims.sub, isProxy,
+       String(b.transcript ?? ""), String(b.translation ?? b.transcript ?? ""), audioPath],
+    );
+    return cin.rows[0].id as string;
+  });
+  res.status(201).json({ id: out });
+}));
+
+checkinsRouter.patch("/checkins/:id", asyncHandler<AuthedRequest>(async (req, res) => {
+  const cid = req.params.cid;
+  const visibility = req.body?.visibility;
+  if (!VIS.has(visibility)) return res.status(400).json({ error: "bad visibility" });
+  const r = await withUserTxn(req.claims, (q) =>
+    q.query(
+      `update public.checkins set visibility = $3 where id = $1 and circle_id = $2 returning id`,
+      [req.params.id, cid, visibility],
+    ),
+  );
+  if (r.rowCount === 0) return res.status(403).json({ error: "cannot change this check-in" });
+  res.json({ id: req.params.id, visibility });
+}));
+
+checkinsRouter.delete("/checkins/:id", asyncHandler<AuthedRequest>(async (req, res) => {
+  const r = await withUserTxn(req.claims, (q) =>
+    q.query(`delete from public.checkins where id = $1 and circle_id = $2 returning id`,
+      [req.params.id, req.params.cid]),
+  );
+  if (r.rowCount === 0) return res.status(403).json({ error: "cannot delete this check-in" });
+  res.status(204).end();
+}));
+
+checkinsRouter.get("/checkins/:id/audio", asyncHandler<AuthedRequest>(async (req, res) => {
+  const row = await withUserTxn(req.claims, (q) =>
+    q.query(
+      `select cc.audio_path from public.checkin_content cc
+       where cc.checkin_id = $1 and cc.circle_id = $2`, [req.params.id, req.params.cid],
+    ),
+  );
+  const path = row.rows[0]?.audio_path;
+  if (!path) return res.status(403).json({ error: "not permitted" });
+  const url = await signedUrl(path, 120);
+  res.json({ url, expires_at: new Date(Date.now() + 120_000).toISOString() });
 }));
