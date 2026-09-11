@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { env } from "../config.js";
 import { metaRouter } from "../routes/meta.js";
+import { accountRouter } from "../routes/account.js";
 
 export function createApp(): express.Express {
   const app = express();
@@ -13,7 +14,8 @@ export function createApp(): express.Express {
   app.use(express.json({ limit: "1mb" }));
 
   app.use("/api", metaRouter);
-  // subsequent tasks add: accountRouter, circlesRouter, invitesRouter,
+  app.use("/api", accountRouter);
+  // subsequent tasks add: circlesRouter, invitesRouter,
   // checkinsRouter, careSignalRouter, shiftsRouter, planRouter, routineRouter,
   // ttsRouter — each mounted here.
 
