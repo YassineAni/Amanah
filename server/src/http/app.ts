@@ -6,6 +6,7 @@ import { accountRouter } from "../routes/account.js";
 import { circlesRouter } from "../routes/circles.js";
 import { invitesRouter } from "../routes/invites.js";
 import { checkinsRouter } from "../routes/checkins.js";
+import { careSignalRouter } from "../routes/careSignal.js";
 
 export function createApp(): express.Express {
   const app = express();
@@ -21,9 +22,9 @@ export function createApp(): express.Express {
   app.use("/api", circlesRouter);
   app.use("/api", invitesRouter);
   app.use("/api/circles/:cid", checkinsRouter);
+  app.use("/api", careSignalRouter);
   // subsequent tasks add:
-  // careSignalRouter, shiftsRouter, planRouter, routineRouter,
-  // ttsRouter — each mounted here.
+  // shiftsRouter, planRouter, routineRouter, ttsRouter — each mounted here.
 
   // Error shape. Handlers throw Object.assign(new Error(msg), { status })
   // for intentional 4xx responses (e.g. a 409 from a guard trigger) — that
