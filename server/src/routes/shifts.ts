@@ -58,6 +58,14 @@ shiftsRouter.patch("/shifts/:id", asyncHandler<AuthedRequest>(async (req, res) =
     if ("coordinator_note" in b) add("coordinator_note", b.coordinator_note ? String(b.coordinator_note).slice(0, 400) : null);
     if ("purpose" in b) add("purpose", String(b.purpose ?? "").slice(0, 400));
   }
+  // No app-level check that the caller is THIS shift's assigned caregiver
+  // (or a coordinator) before allowing checked_in_at/checked_out_at —
+  // that's enforced by RLS's upd_shifts policy (app.is_member(circle_id)
+  // and (coordinator or caregiver_id = auth.uid())), not here. An
+  // unassigned member's UPDATE matches zero rows and falls into the
+  // rowCount === 0 -> 403 branch below. Verified against
+  // test/db/write-matrix.test.ts's "unassigned caregiver cannot touch a
+  // shift at all" case (Part 1a).
   if ("checked_in_at" in b) add("checked_in_at", b.checked_in_at ?? null);
   if ("checked_out_at" in b) add("checked_out_at", b.checked_out_at ?? null);
   if (!sets.length) return res.status(400).json({ error: "nothing to update" });
