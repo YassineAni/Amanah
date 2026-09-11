@@ -38,5 +38,9 @@ export async function verifyAccessToken(token: string): Promise<Claims> {
       if (e instanceof errors.JWTExpired) throw new TokenError("token expired");
     }
   }
-  throw new TokenError(`token verification failed: ${(lastErr as Error)?.message ?? "unknown"}`);
+  // Details (raw jose/library text) stay server-side; the client gets a
+  // generic reason, matching the deliberately-short TokenError messages
+  // thrown above for the specific cases (expired / no sub).
+  console.warn("token verification failed:", (lastErr as Error)?.message ?? lastErr);
+  throw new TokenError("invalid token");
 }

@@ -2,11 +2,14 @@ import { execSync } from "node:child_process";
 import { Client } from "pg";
 import { SignJWT } from "jose";
 
-// Local dev connection strings. Ports are the winnat-remapped 541xx set this
-// machine uses (spec §10 D-log addendum / 1b handoff invariant #10); CI runs on
-// the Supabase defaults and overrides via real env vars. Exported so the 1b
-// vitest env-setup has ONE source for these — src/config.ts keeps the default
-// ports the plan specifies and never needs a local-vs-CI divergence.
+// Local dev connection strings. Ports are the winnat-remapped 541xx set
+// supabase/config.toml pins (spec §10 D-log addendum / 1b handoff invariant
+// #10). CI reads that same committed config.toml via `supabase start`, so
+// today these ports match CI too — CI does NOT set DATABASE_URL/SUPABASE_URL
+// etc. as real env vars (see .github/workflows/db.yml). Exported so the 1b
+// vitest env-setup (test/setup-env.ts) has ONE source for these, instead of
+// a second hardcoded copy — if config.toml's ports are ever forked
+// per-environment, only this file needs to change.
 export const ADMIN_URL = "postgresql://postgres:postgres@127.0.0.1:54122/postgres";
 export const APP_URL = "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres";
 export const API_URL = "http://127.0.0.1:54121";

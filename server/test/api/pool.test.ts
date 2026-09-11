@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 import { withUserTxn } from "../../src/db/pool.js";
 
 describe("withUserTxn", () => {
-  test("claims do not leak across two sequential calls on the same pooled conn", async () => {
-    // Call 1 as a real fixture user would see rows; call 2 with a bogus sub
-    // must see nothing — proving set_config was LOCAL and DISCARD ALL ran.
+  test("a bogus sub sees zero rows via RLS (set_config actually reaches the query)", async () => {
+    // This proves withUserTxn's set_config is wired to a real RLS-gated
+    // read, not that it's LOCAL / non-sticky across pooled connections —
+    // that stronger property is proven separately by test/db/bypass.test.ts
+    // (DISCARD ALL on a raw client).
     const bogus = "00000000-0000-0000-0000-000000000000";
     const n = await withUserTxn(
       { sub: bogus, email: "x@example.com", role: "authenticated" },
