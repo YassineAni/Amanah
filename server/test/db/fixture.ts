@@ -85,8 +85,18 @@ export async function loadFixture(): Promise<Fixture> {
     await mem(circleA2, users.twoCircle, "coordinator", true);
     await mem(circleB1, users.twoCircle, "family", true);
 
-    // one check-in per visibility in circle A1, recorded by the coordinator
-    // as a proxy EXCEPT the "elder_self" one; plus one proxy coordinator-tier.
+    // "Today" for all seeded rows below is computed in America/Toronto (the
+    // timezone every fixture circle uses), NOT the bare SQL current_date
+    // (the DB session's default, effectively UTC on this stack). Every 1b
+    // handler that answers "what day is it for this circle" (windowDates,
+    // GET /today, GET /plan's default date, routine.ts's effective_from)
+    // does the same circle-tz-aware computation — using current_date here
+    // would silently disagree with all of them for ~4-5 hours a day (the
+    // UTC-vs-Toronto offset window), which is exactly what surfaced as an
+    // intermittent GET /today failure. (1a's own tests never compare these
+    // seeded dates against a tz-aware computation, so this was latent
+    // until 1b's timezone-aware endpoints existed to disagree with it.)
+    const TODAY = `(now() at time zone 'America/Toronto')::date`;
     const checkins: Record<string, string> = {};
     const addCheckin = async (
       key: string, visibility: string, recorder: string, isProxy: boolean,
@@ -95,7 +105,7 @@ export async function loadFixture(): Promise<Fixture> {
       const id = randomUUID();
       await c.query(
         `insert into public.checkins (id,circle_id,occurred_on,mood,spoken_lang,visibility,recorded_by,is_proxy,created_via)
-         values ($1,$2,current_date,'ok','ar',$3,$4,$5,'demo')`,
+         values ($1,$2,${TODAY},'ok','ar',$3,$4,$5,'demo')`,
         [id, circle, visibility, recorder, isProxy],
       );
       await c.query(
@@ -135,23 +145,31 @@ export async function loadFixture(): Promise<Fixture> {
         [circleB1, users.B1_coordinator]),
     };
 
+    // effective_from must use the same TODAY as completions.A1/B1 below
+    // (which reference these same routine_item ids for on_date). Without
+    // this, effective_from would take the column default (bare
+    // current_date — UTC session default), and inside the UTC/Toronto
+    // offset window that default can be LATER than TODAY, making
+    // expandDay's `effective_from <= date` filter silently drop the item
+    // (and its completion) for "today" — the same bug class as the
+    // checkins fix above, just one column over.
     const routineItems: Record<string, string> = {
       A1: await one(
-        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
-         values ($1,'A1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleA1]),
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays,effective_from)
+         values ($1,'A1 morning meds','08:00','{1,2,3,4,5}',${TODAY}) returning id`, [circleA1]),
       B1: await one(
-        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
-         values ($1,'B1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleB1]),
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays,effective_from)
+         values ($1,'B1 morning meds','08:00','{1,2,3,4,5}',${TODAY}) returning id`, [circleB1]),
     };
 
     const completions: Record<string, string> = {
       A1: await one(
         `insert into public.completions (circle_id,routine_item_id,on_date,done_by)
-         values ($1,$2,current_date,$3) returning id`,
+         values ($1,$2,${TODAY},$3) returning id`,
         [circleA1, routineItems.A1, users.A1_caregiver_hired]),
       B1: await one(
         `insert into public.completions (circle_id,routine_item_id,on_date,done_by)
-         values ($1,$2,current_date,$3) returning id`,
+         values ($1,$2,${TODAY},$3) returning id`,
         [circleB1, routineItems.B1, users.B1_coordinator]),
     };
 
@@ -160,11 +178,11 @@ export async function loadFixture(): Promise<Fixture> {
       // longer be able to delete (delete-matrix).
       A1: await one(
         `insert into public.adhoc_tasks (circle_id,on_date,title,time_of_day,added_by)
-         values ($1,current_date,'A1 pharmacy run','14:00',$2) returning id`,
+         values ($1,${TODAY},'A1 pharmacy run','14:00',$2) returning id`,
         [circleA1, users.A1_caregiver_hired]),
       B1: await one(
         `insert into public.adhoc_tasks (circle_id,on_date,title,time_of_day,added_by)
-         values ($1,current_date,'B1 pharmacy run','14:00',$2) returning id`,
+         values ($1,${TODAY},'B1 pharmacy run','14:00',$2) returning id`,
         [circleB1, users.B1_coordinator]),
     };
 

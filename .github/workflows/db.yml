@@ -22,6 +22,7 @@ jobs:
           supabase db reset
           supabase db reset
       - run: npm --prefix server ci
+      - run: npm --prefix server run typecheck
       - run: npm --prefix server run test:db
       - if: always()
         run: supabase stop
