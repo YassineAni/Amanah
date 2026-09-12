@@ -33,7 +33,15 @@ jobs:
     if: ${{ vars.DEPLOYED == 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # Pinned to the latest stable release, not @master (the plan's draft,
+      # and this action's own README, both used @master — a floating branch
+      # ref that runs whatever the maintainer last pushed, unreviewed, with
+      # this job's FLY_API_TOKEN access). Every other action in this repo's
+      # workflows is already pinned to a version tag, never a branch;
+      # matching that convention here closes a real supply-chain gap a
+      # security review flagged. Bump deliberately if a newer flyctl
+      # feature is ever needed.
+      - uses: superfly/flyctl-actions/setup-flyctl@v1.5
       - run: flyctl deploy --remote-only --config server/fly.toml
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
