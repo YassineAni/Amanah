@@ -18,6 +18,21 @@ export const ROLE_LABEL: Record<CircleRole, string> = {
   family: "Family",
 };
 
+// Lives here, not in onboarding/PrivacyNotice.tsx (which re-exports it) —
+// RequireCircle below needs it too, and PrivacyNotice.tsx already imports
+// useCircle from this file, so defining it there and importing it back here
+// would be a circular import. profiles.privacy_notice_version records which
+// version a person actually agreed to; bump this whenever the notice's
+// substance changes. docs/pilot-privacy-assessment.md (Task 15) cross-checks
+// against this literal export.
+export const PRIVACY_NOTICE_VERSION = "2026-09-1c-v1";
+
+function noticeAccepted(profile: Profile | null): boolean {
+  // null = still loading or signed out — RequireCircle's earlier checks
+  // (session, loading) already gate those cases before this ever matters.
+  return !!profile && !!profile.tosAcceptedAt && profile.privacyNoticeVersion === PRIVACY_NOTICE_VERSION;
+}
+
 /** Route each role opens on. Takes a role directly (not a user) — role is
  *  scoped to the active circle now, there's no longer a single fixed
  *  "user.role". Also drops the old cg-lea persona special case (?who=lea)
@@ -105,8 +120,17 @@ function CenterScreen({ children }: { children: ReactNode }) {
   return <main className="ocean min-h-screen p-6 grid place-items-center"><div className="text-center">{children}</div></main>;
 }
 
-/** Gates a screen on: signed in, session check complete, in at least one
- *  circle (else -> CreateCircle — Q6), and optionally a specific role.
+/** Gates a screen on: signed in, session check complete, the privacy
+ *  notice accepted, in at least one circle (else -> CreateCircle — Q6),
+ *  and optionally a specific role.
+ *
+ *  Notice-acceptance is checked BEFORE the "no circles yet" redirect, not
+ *  after — the backend's own requireNoticeAccepted gates POST /circles
+ *  itself, so a not-yet-accepted user must never be routed to
+ *  CreateCircle first (they'd fill out the form and hit a confusing 403).
+ *  /privacy-notice and /create-circle are both top-level routes, NOT
+ *  wrapped in RequireCircle themselves — each handles its own state
+ *  directly, avoiding a redirect loop against the very checks below.
  *
  *  Deliberately English-only (no ar/en bilingual copy like the old
  *  RequireRole had) — that depended on session.user.lang, a field that no
@@ -117,7 +141,7 @@ function CenterScreen({ children }: { children: ReactNode }) {
  *  can render its own inside `loading`/`error`-aware logic instead; this
  *  is the generic, always-available fallback every route shares. */
 export function RequireCircle({ role, children }: { role?: CircleRole; children: ReactNode }) {
-  const { loading, error, activeCircle, refresh } = useCircle();
+  const { loading, error, profile, activeCircle, refresh } = useCircle();
 
   if (!isSessionResolved()) return null; // avoids a sign-in-screen flash
   if (!getSession()) return <Redirect to="/" />;
@@ -131,6 +155,7 @@ export function RequireCircle({ role, children }: { role?: CircleRole; children:
       </CenterScreen>
     );
   }
+  if (!noticeAccepted(profile)) return <Redirect to="/privacy-notice" />;
   if (!activeCircle) return <Redirect to="/create-circle" />;
   if (role && activeCircle.role !== role) return <Redirect to={homeFor(activeCircle.role)} />;
   return <>{children}</>;

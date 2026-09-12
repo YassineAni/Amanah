@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Redirect } from "wouter";
 import { api } from "../api";
-import { useCircle } from "../circle";
+import { useCircle, PRIVACY_NOTICE_VERSION } from "../circle";
 
-// Bump this whenever NOTICE's substance changes — profiles.privacy_notice_version
-// records which version a person actually agreed to. Single source of truth:
-// docs/pilot-privacy-assessment.md (Task 15) cross-checks against this
-// literal export, not the other way around.
-export const PRIVACY_NOTICE_VERSION = "2026-09-1c-v1";
+// Re-exported, not defined here: RequireCircle (circle.tsx) needs this
+// constant too, and this file already imports useCircle from there — defining
+// it here and importing it back into circle.tsx would be a circular import.
+// circle.tsx is the canonical source; this re-export keeps the version
+// reachable from the file whose name Task 15's cross-check actually names.
+export { PRIVACY_NOTICE_VERSION };
 
 const NOTICE = `
 Before you (or the family you're setting up) use Amanah, here's what actually
