@@ -9,6 +9,7 @@
     "test:db": "vitest run --config vitest.config.ts",
     "test:db:watch": "vitest --config vitest.config.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
+    "sweep:orphans": "tsx scripts/sweep-orphans.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

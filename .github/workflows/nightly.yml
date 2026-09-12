@@ -1,0 +1,41 @@
+name: nightly
+
+on:
+  schedule: [{ cron: "0 6 * * *" }]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    # Guard: this workflow is created in Part 1c, before Task 14 provisions
+    # a deployed Supabase project and its repo secrets. Without this, the
+    # nightly cron fires starting the moment this merges and fails every
+    # night (empty secrets -> a hard connection error) until deploy lands —
+    # pure noise. Skip cleanly instead; workflow_dispatch still works once
+    # secrets exist, for a manual first run before the cron catches up.
+    if: ${{ vars.DEPLOYED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - run: npm --prefix server ci
+      - run: npm --prefix server run sweep:orphans
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL_ADMIN: ${{ secrets.DATABASE_URL_ADMIN }}
+
+  backup:
+    runs-on: ubuntu-latest
+    if: ${{ vars.DEPLOYED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with: { version: latest }
+      - run: bash server/scripts/backup.sh
+        env:
+          DATABASE_URL_ADMIN: ${{ secrets.DATABASE_URL_ADMIN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          BACKUP_DIR: ./backup
+      - uses: actions/upload-artifact@v4
+        with: { name: nightly-backup, path: ./backup, retention-days: 30 }
