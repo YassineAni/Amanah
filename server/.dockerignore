@@ -1,0 +1,7 @@
+node_modules
+audio/uploads
+audio/tts
+data.json
+test
+.env
+.env.*
