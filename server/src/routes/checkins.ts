@@ -17,6 +17,7 @@ checkinsRouter.get("/checkins", asyncHandler<AuthedRequest>(async (req, res) => 
   const rows = await withUserTxn(req.claims, (q) =>
     q.query(
       `select c.id, c.occurred_on::text, c.mood, c.spoken_lang, c.is_proxy, c.visibility,
+              c.created_via,
               p.full_name as recorded_by_name,
               cc.transcript, cc.translation,
               (cc.audio_path is not null) as has_audio
