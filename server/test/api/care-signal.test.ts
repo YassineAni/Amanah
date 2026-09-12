@@ -63,14 +63,20 @@ test("a shift near local midnight buckets by the circle's timezone, not UTC", as
 test("GET /api/my-shifts returns upcoming shifts across every circle, scoped to the caller", async () => {
   const c = admin(); await c.connect();
   await c.query(
-    `insert into public.shifts (circle_id, starts_at, ends_at, caregiver_id, purpose)
-     values ($1, now() + interval '1 day', now() + interval '1 day 2 hours', $2, 'future visit')`,
+    `insert into public.shifts (circle_id, starts_at, ends_at, caregiver_id, purpose, coordinator_note)
+     values ($1, now() + interval '1 day', now() + interval '1 day 2 hours', $2, 'future visit', 'watch for the step by the door')`,
     [fx.circleA1, fx.users.A1_coordinator]);
   await c.end();
 
   const jwt = await mintJwt({ sub: fx.users.A1_coordinator, email: "c@example.com" });
   const res = await request(createApp()).get(`/api/my-shifts`).set(auth(jwt));
   expect(res.status).toBe(200);
-  expect(res.body.shifts.some((s: any) => s.circle_id === fx.circleA1)).toBe(true);
+  const mine = res.body.shifts.find((s: any) => s.circle_id === fx.circleA1);
+  expect(mine).toBeTruthy();
   expect(res.body.shifts.every((s: any) => s.circle_id !== fx.circleB1)).toBe(true);
+  // Regression guard: the query previously omitted coordinator_note from its
+  // SELECT list entirely — the frontend's caregiver screen shows this note
+  // ("From your coordinator"), so a silently-missing field here isn't a
+  // typecheck error, it's a caregiver never seeing a note that exists.
+  expect(mine.coordinator_note).toBe("watch for the step by the door");
 });

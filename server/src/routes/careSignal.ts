@@ -51,7 +51,8 @@ careSignalRouter.get(
   asyncHandler<AuthedRequest>(async (req, res) => {
     const rows = await withUserTxn(req.claims, (q) =>
       q.query(
-        `select s.id, s.circle_id, c.name as circle_name, s.starts_at, s.ends_at, s.purpose
+        `select s.id, s.circle_id, c.name as circle_name, s.starts_at, s.ends_at, s.purpose,
+                s.coordinator_note
          from public.shifts s
          join public.circles c on c.id = s.circle_id
          where s.caregiver_id = $1 and s.starts_at >= now()
