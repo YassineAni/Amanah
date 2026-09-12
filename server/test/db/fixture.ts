@@ -145,13 +145,21 @@ export async function loadFixture(): Promise<Fixture> {
         [circleB1, users.B1_coordinator]),
     };
 
+    // effective_from must use the same TODAY as completions.A1/B1 below
+    // (which reference these same routine_item ids for on_date). Without
+    // this, effective_from would take the column default (bare
+    // current_date — UTC session default), and inside the UTC/Toronto
+    // offset window that default can be LATER than TODAY, making
+    // expandDay's `effective_from <= date` filter silently drop the item
+    // (and its completion) for "today" — the same bug class as the
+    // checkins fix above, just one column over.
     const routineItems: Record<string, string> = {
       A1: await one(
-        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
-         values ($1,'A1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleA1]),
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays,effective_from)
+         values ($1,'A1 morning meds','08:00','{1,2,3,4,5}',${TODAY}) returning id`, [circleA1]),
       B1: await one(
-        `insert into public.routine_items (circle_id,title,time_of_day,weekdays)
-         values ($1,'B1 morning meds','08:00','{1,2,3,4,5}') returning id`, [circleB1]),
+        `insert into public.routine_items (circle_id,title,time_of_day,weekdays,effective_from)
+         values ($1,'B1 morning meds','08:00','{1,2,3,4,5}',${TODAY}) returning id`, [circleB1]),
     };
 
     const completions: Record<string, string> = {

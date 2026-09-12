@@ -25,12 +25,19 @@ careSignalRouter.get(
          where c.circle_id = $1 and c.occurred_on between $2 and $3
          order by c.occurred_on, c.created_at`, [cid, from, to],
       )).rows;
+      // starts_at is timestamptz; a bare ::date/::text cast renders in the
+      // DB session's timezone (UTC here), not the circle's — the same bug
+      // class fixed for routine_items.effective_from/archived_at (see
+      // routes/plan.ts). `at time zone $4` converts to the circle's local
+      // wall-clock time first, so both the day-window filter and the date
+      // weekStrip buckets shifts by agree with `dates` (also tz-local).
       const shifts = (await q.query(
-        `select s.circle_id, s.starts_at::text, s.activity_tags,
+        `select s.circle_id, (s.starts_at at time zone $4)::text as starts_at, s.activity_tags,
                 p.full_name as caregiver_name
          from public.shifts s
          left join public.profiles p on p.id = s.caregiver_id
-         where s.circle_id = $1 and s.starts_at::date between $2 and $3`, [cid, from, to],
+         where s.circle_id = $1 and (s.starts_at at time zone $4)::date between $2 and $3`,
+        [cid, from, to, tz],
       )).rows;
       return { window: dates, days: weekStrip(cid, dates, checkins as any, shifts as any) };
     });

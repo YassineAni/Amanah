@@ -17,10 +17,18 @@ shiftsRouter.get("/shifts", asyncHandler<AuthedRequest>(async (req, res) => {
   const to = String(req.query.to ?? "2999-12-31");
   const rows = await withUserTxn(req.claims, (q) =>
     q.query(
+      // A bare s.starts_at::date renders in the DB session's timezone
+      // (UTC), not the circle's — the same bug class fixed for
+      // routine_items.effective_from/archived_at (routes/plan.ts). Convert
+      // to the circle's local wall-clock time before taking the date, so a
+      // shift near local midnight lands in the day range the caller (and
+      // the circle) actually mean.
       `select s.id, s.starts_at, s.ends_at, s.caregiver_id, p.full_name as caregiver_name,
               s.purpose, s.activity_tags, s.coordinator_note, s.checked_in_at, s.checked_out_at
-       from public.shifts s left join public.profiles p on p.id = s.caregiver_id
-       where s.circle_id = $1 and s.starts_at::date between $2 and $3
+       from public.shifts s
+       left join public.profiles p on p.id = s.caregiver_id
+       join public.circles c on c.id = s.circle_id
+       where s.circle_id = $1 and (s.starts_at at time zone c.timezone)::date between $2 and $3
        order by s.starts_at`, [cid, from, to],
     ),
   );

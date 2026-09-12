@@ -100,6 +100,12 @@ invitesRouter.get(
 invitesRouter.post(
   "/invites/:token/accept",
   requireAuth,
+  // Intentionally NOT asyncHandler-wrapped: the whole body below is inside
+  // one try/catch that always resolves the response itself (never lets a
+  // rejection escape) and independently applies the same
+  // genericize-5xx/pass-through-4xx rule app.ts's error middleware does.
+  // If this handler ever grows a code path after/outside that try/catch,
+  // wrap it with asyncHandler like every other route in this codebase.
   async (req, res) => {
     const { claims } = req as AuthedRequest;
     try {
