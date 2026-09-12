@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "test:db": "vitest run --config vitest.config.ts",
     "test:db:watch": "vitest --config vitest.config.ts",
-    "seed:demo": "tsx scripts/seed-demo.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
