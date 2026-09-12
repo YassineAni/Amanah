@@ -1,11 +1,13 @@
-# Her Day
+# Amanah
 
 **The elder-care app that asks her how her day was — and moves the schedule based on the answer.**
 
-_MuslimHacks 2026 · Challenge 01 (Elder care) · solo build, ~24h_
+_Started at MuslimHacks 2026 (Challenge 01, Elder care) as a 24h solo hackathon build,
+now becoming a real multi-tenant product._
 
-> ⚠️ **Demo project.** Every person and record in it is fictional. Authentication is
-> demo-grade (shared password, forgeable tokens). Do not put real personal or health
+> ⚠️ **Pre-release.** The database and API are real (Postgres + Row-Level Security,
+> a proper multi-tenant schema, magic-link auth) but the frontend has not been
+> rewired to them yet, and nothing is deployed. Do not put real personal or health
 > data into this app as it stands.
 
 ---
@@ -19,8 +21,10 @@ actually felt living it. The person receiving the care has no channel to put any
 to her. If she is Arabic-first, has cataracts and arthritis, and has never typed on a
 phone, every existing care app locks her out on the first screen.
 
-**Her Day makes the elder's own account of her day the signal her care runs on**, and
-lets *her* control who hears each thing.
+**Amanah makes the elder's own account of her day the signal her care runs on**, and
+lets *her* control who hears each thing. *Amanah* — something entrusted to your
+safekeeping — is what a family's account of her day, and her trust in who hears it,
+actually is.
 
 ## What it does
 
@@ -30,35 +34,48 @@ lets *her* control who hears each thing.
 - **The loop closes.** Her check-ins trend *next to the schedule* — which caregiver
   came, what they did, time spent outside. The coordinator schedules toward her good
   days. Remote family see "is she okay?" instead of an adherence percentage.
-- **Consent enforced on the server.** A note she marks private is never sent to a
-  hired caregiver's browser at all — not hidden with CSS, not sent.
+- **Consent enforced at the database, not the app.** A note she marks private never
+  reaches a hired caregiver's connection at all — the database itself refuses the
+  row, regardless of what the API layer does or doesn't check.
 - **Weekly care plan.** A routine template that expands into each day's checklist;
-  timed task completion is visible to coordinator and family in real time.
-- **Clinical files.** Consent-gated storage for discharge papers / prescriptions,
-  with an upload scan that rejects corrupt or executable files. Display only — the app
-  never interprets a document.
+  editing a routine item never rewrites what past days already showed. Timed task
+  completion is visible to coordinator and family in real time.
+- **Multi-tenant from the schema up.** Any number of families, each with their own
+  circle of coordinator / caregivers / family / elder, fully isolated from every
+  other family's data — enforced by Postgres Row-Level Security, not application code.
 - **Built for the elder.** Arabic-first UI with full RTL, read-aloud (TTS) in her
-  language, real text zoom, high contrast, and a pointer magnifier.
+  language, real text zoom, high contrast, and a pointer magnifier *(frontend; not
+  yet reconnected to the new backend — see Honest status)*.
 
 ## Architecture
 
 ```
 frontend/  React 19 + Vite + Tailwind v4        four role views over one typed API client
-   |
-   |  fetch (Bearer token)
+   |                                             (currently targets the RETIRED
+   |  fetch (Bearer token)                        single-tenant API — see below)
    v
-server/    Node + Express + TypeScript (tsx)     in-memory state + data.json persistence
-   |                                             consent.ts  -> one visibility check, every read path
-   |                                             plan.ts     -> weekly routine -> per-day rows
-   |                                             scan.ts      -> upload safety check
+server/    Node + Express + TypeScript (tsx)    magic-link JWT auth (Supabase)
+   |                                             withUserTxn — every request runs as
+   |                                             a real restricted Postgres role,
+   |                                             claims bound, never interpolated
+   v
+supabase/  Postgres, RLS as the authorization boundary
+   |         organizations -> circles -> circle_members / checkins / checkin_content /
+   |         shifts / routine_items / completions / adhoc_tasks / invites
    v
 OpenAI     whisper-1 (transcribe + translate) · tts-1 (read-aloud, disk-cached)
 ```
 
-- **No database.** State lives in memory and is mirrored to `server/data.json`.
-- **No build step on the server.** `tsx` runs the TypeScript directly; no native deps.
-- **Consent is a boundary, not a filter.** `visibleCheckin()` / `visibleFile()` run on
-  every read; the wire never carries data the caller isn't allowed to see.
+- **Real database.** Supabase-hosted Postgres, not in-memory state. Every tenant
+  table has Row-Level Security **forced** (`FORCE ROW LEVEL SECURITY`) — the API's
+  own connection role has no bypass.
+- **RLS is the authorization boundary, not a filter the app applies on read.** A
+  consent-tier check for a check-in's words/audio is a real child-table policy: a
+  viewer who isn't permitted gets zero rows back from Postgres, not a nulled field.
+- **Magic-link auth**, verified server-side against Supabase's JWKS/JWT secret —
+  no passwords, no forgeable `base64url(userId)` tokens.
+- **A 160+ test suite** exercises this against the real local stack: real RLS,
+  real JWTs, real cross-tenant isolation checks — not mocks.
 
 ## Tech stack
 
@@ -66,87 +83,81 @@ OpenAI     whisper-1 (transcribe + translate) · tts-1 (read-aloud, disk-cached)
 |-----------|-------|
 | Language  | TypeScript |
 | Frontend  | React 19, Vite 7, Tailwind CSS v4, wouter, lucide-react |
-| Backend   | Node.js, Express 4, tsx, multer |
+| Backend   | Node.js, Express 4, tsx, multer, `pg`, `jose` |
+| Database  | Postgres via Supabase, Row-Level Security |
+| Auth      | Supabase magic-link, JWT verification (JWKS + HS256 fallback) |
 | Voice     | OpenAI Whisper (`whisper-1`), OpenAI TTS (`tts-1`) |
-| Storage   | In-memory + JSON file |
+| Testing   | Vitest, Supertest, against a real local Supabase stack |
 | i18n      | Custom dictionary, English + Arabic (RTL) |
 
 ## Running locally
 
-Requires Node 20+ and an OpenAI API key.
+Requires Node 20+, Docker (for the local Supabase stack), the Supabase CLI
+(`npx supabase`), and an OpenAI API key for the voice features.
 
-### 1. Backend
+### 1. Database
+
+```bash
+npx supabase start        # first run pulls the Postgres/Auth/Storage images
+npx supabase db reset      # apply all migrations
+```
+
+### 2. Server (the real multi-tenant API)
 
 ```bash
 cd server
 npm install
-# create server/.env:
-#   OPENAI_API_KEY=sk-...
-#   CORS_ORIGIN=http://localhost:5173   # optional; defaults to reflecting the request origin
-npm start          # http://localhost:8787
+cp .env.example .env      # fill in DATABASE_URL / SUPABASE_* — see .env.example
+npm start                 # http://localhost:8787
+npm run test:db           # the full suite against your local stack
 ```
 
-### 2. Frontend
+### 3. Frontend
 
-```bash
-cd frontend
-npm install
-# frontend/.env already contains:
-#   VITE_API_BASE=http://localhost:8787
-npm run dev        # http://localhost:5173
-```
-
-Open **http://localhost:5173**.
-
-### Demo personas
-
-All share the password **`vivemdu212`**. The login page also has one-tap demo chips.
-The demo runs on a pinned date (**2026-09-06**, a Sunday) with seeded history.
-
-| Username        | Role        | Who |
-|-----------------|-------------|-----|
-| `elder-fatima`  | elder       | Fatima — Arabic UI, RTL |
-| `coord-yusuf`   | coordinator | Yusuf — her son, organizes the care |
-| `cg-amina`      | caregiver   | Amina — family caregiver |
-| `cg-lea`        | caregiver   | Léa — hired agency caregiver (sees least) |
-| `fam-mona`      | family      | Mona — remote family |
-
-Open four tabs to run all four views at once — each tab holds its own session.
-
-`POST /api/demo/reset` restores seeded state.
+The frontend still targets the earlier single-tenant API shape and does **not**
+currently work against the server above — reconnecting it is Part 1c of the
+rebuild (see Roadmap). Until then, `cd frontend && npm install && npm run dev`
+gets you the UI, but its login and data calls won't succeed against the current
+server.
 
 ## Honest status
 
-**Real:** voice recording, Whisper transcription + translation, TTS, server-side
-consent enforcement, routine / care-plan system, timed task completion, file upload +
-scan + consent gating, all CRUD.
+**Real, and tested (160+ tests against a live local stack):** multi-tenant Postgres
+schema with Row-Level Security as the real authorization boundary; magic-link JWT
+auth; onboarding, invites, check-ins (with server-enforced consent tiers), shifts,
+weekly routine + adhoc tasks, care-signal view, text-to-speech — all as a real
+Express API, not in-memory state.
 
-**Demo-grade / not built:** real authentication, database, multi-elder tenancy,
-notifications, onboarding/invite flow, deployment, automated test suite. Auth tokens
-are `base64url(userId)` and forgeable. `data.json` is plaintext at rest. Audio is sent
-to OpenAI in the US (a real deployment needs on-region processing + a privacy impact
-assessment).
+**Not yet built:** the frontend isn't wired to any of the above (it still expects
+the old single-tenant shape); file/audio storage is stubbed pending Supabase
+Storage; nothing is deployed; no onboarding/invite emails have been tried against
+a real mail provider yet.
 
 ## Roadmap
 
-1. **Two-way channel** — when a caregiver logs a concern or a hard-day pattern appears,
-   the app asks the elder one spoken question that evening; her answer routes to the
-   coordinator.
-2. Real auth + Postgres; multi-tenant.
-3. Mobile / installable client.
-4. On-region speech processing (Quebec Law 25); native-speaker review of all copy;
+This rebuild is running as a staged plan (`docs/superpowers/plans/`):
+
+1. ✅ **Part 1a** — multi-tenant Postgres schema + RLS.
+2. ✅ **Part 1b** — the API layer described above.
+3. **Part 1c** (next) — Supabase Storage for check-in audio and clinical files,
+   rewiring the frontend to the real API, and a first deployment.
+4. Two-way channel — when a caregiver logs a concern or a hard-day pattern appears,
+   the app asks the elder one spoken question that evening; her answer routes to
+   the coordinator.
+5. On-region speech processing (Quebec Law 25); native-speaker review of all copy;
    accessibility audit with real elders.
 
 ## Repository layout
 
 ```
-frontend/   the React app (all four views)
+frontend/   the React app (all four views) — pending reconnection, see Part 1c
 server/     the Express API
+supabase/   Postgres migrations + local dev config
 docs/       design, data model, guardrails, technical overview, demo script, pitch
-openspec/   the spec-driven change that defines the MVP
-app/         earlier standalone prototype (reference only)
+openspec/   the spec-driven change that defined the original single-tenant MVP
+app/        earlier standalone prototype (reference only)
 ```
 
 ## License
 
-Not licensed for reuse. Hackathon submission — fictional demo data only.
+Not licensed for reuse. Started as a hackathon submission — fictional demo data only.
