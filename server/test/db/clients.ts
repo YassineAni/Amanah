@@ -25,11 +25,17 @@ const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
 const ANON_KEY_FALLBACK =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlLWRlbW8iLCJpYXQiOjE2NDE3NjkyMDAsImV4cCI6MTc5OTUzNTYwMH0.dc_X5iR_VP_qT0zsiyj_I_OZ2T9FtRU2BBNWN8Bu4GE";
 
+// Cached: resolveAnonKey() and resolveServiceRoleKey() each need this output;
+// without caching, module load spawned the CLI twice for no reason.
+let cachedStatusEnv: string | null = null;
 function statusEnv(): string {
-  return execSync("npx supabase status -o env", {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  if (cachedStatusEnv === null) {
+    cachedStatusEnv = execSync("npx supabase status -o env", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  }
+  return cachedStatusEnv;
 }
 
 function resolveAnonKey(): string {
@@ -51,11 +57,27 @@ export const ANON_KEY = resolveAnonKey();
 // inject ("test-service-role-key") 401s at the first store().upload(),
 // so this resolves the real key the same way resolveAnonKey() does.
 function resolveServiceRoleKey(): string {
-  const m = statusEnv().match(/SERVICE_ROLE_KEY="?([^"\r\n]+)"?/);
+  // Unlike resolveAnonKey(), there's no safe fallback to fall back to — so
+  // this must throw a clear diagnostic rather than let a raw subprocess
+  // error surface. statusEnv() itself is a bare execSync with no try/catch
+  // of its own: if the stack isn't running, `npx supabase status` exits
+  // non-zero and execSync throws immediately, well before the `if (!key)`
+  // check below could ever run — so that check alone was unreachable in
+  // the actual likely failure mode. Wrapping the call, not just the
+  // parse, is what makes the friendly message actually fire.
+  let env: string;
+  try {
+    env = statusEnv();
+  } catch {
+    throw new Error(
+      "could not run `npx supabase status -o env` to resolve SERVICE_ROLE_KEY — is the local stack running (`npx supabase start`)?",
+    );
+  }
+  const m = env.match(/SERVICE_ROLE_KEY="?([^"\r\n]+)"?/);
   const key = m?.[1]?.trim();
   if (!key) {
     throw new Error(
-      "could not resolve SERVICE_ROLE_KEY from `npx supabase status -o env` — is the local stack running (`npx supabase start`)?",
+      "`npx supabase status -o env` ran but had no SERVICE_ROLE_KEY in its output — is the local stack running (`npx supabase start`)?",
     );
   }
   return key;
