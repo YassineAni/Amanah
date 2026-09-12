@@ -25,13 +25,16 @@ const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
 const ANON_KEY_FALLBACK =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlLWRlbW8iLCJpYXQiOjE2NDE3NjkyMDAsImV4cCI6MTc5OTUzNTYwMH0.dc_X5iR_VP_qT0zsiyj_I_OZ2T9FtRU2BBNWN8Bu4GE";
 
+function statusEnv(): string {
+  return execSync("npx supabase status -o env", {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
 function resolveAnonKey(): string {
   try {
-    const env = execSync("npx supabase status -o env", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const m = env.match(/ANON_KEY="?([^"\r\n]+)"?/);
+    const m = statusEnv().match(/ANON_KEY="?([^"\r\n]+)"?/);
     const key = m?.[1]?.trim();
     return key && key.length > 0 ? key : ANON_KEY_FALLBACK;
   } catch {
@@ -40,6 +43,25 @@ function resolveAnonKey(): string {
 }
 
 export const ANON_KEY = resolveAnonKey();
+
+// The service-role key is a per-project signed JWT, NOT a static demo
+// constant like the anon key — there is no safe fallback for it. Real
+// storage.audio.ts calls (Part 1c) authenticate to the local Storage
+// container with this key; the placeholder string setup-env.ts used to
+// inject ("test-service-role-key") 401s at the first store().upload(),
+// so this resolves the real key the same way resolveAnonKey() does.
+function resolveServiceRoleKey(): string {
+  const m = statusEnv().match(/SERVICE_ROLE_KEY="?([^"\r\n]+)"?/);
+  const key = m?.[1]?.trim();
+  if (!key) {
+    throw new Error(
+      "could not resolve SERVICE_ROLE_KEY from `npx supabase status -o env` — is the local stack running (`npx supabase start`)?",
+    );
+  }
+  return key;
+}
+
+export const SERVICE_ROLE_KEY = resolveServiceRoleKey();
 
 export function admin(): Client {
   return new Client({ connectionString: ADMIN_URL });
