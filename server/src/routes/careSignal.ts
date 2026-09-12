@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth, requireNoticeAccepted, type AuthedRequest } from "../auth/middleware.js";
 import { requireCircle } from "../auth/circle.js";
 import { withUserTxn } from "../db/pool.js";
-import { windowDates, weekStrip } from "../domain/careSignal.js";
+import { windowDates, weekStrip, shiftHeaderContext } from "../domain/careSignal.js";
 import { asyncHandler } from "../http/asyncHandler.js";
 
 export const careSignalRouter = Router();
@@ -51,14 +51,47 @@ careSignalRouter.get(
   asyncHandler<AuthedRequest>(async (req, res) => {
     const rows = await withUserTxn(req.claims, (q) =>
       q.query(
+        // The lateral join finds the most recent checkin on/before this
+        // shift's LOCAL date (per its own circle's timezone — the same
+        // "starts_at at time zone c.timezone" pattern used everywhere else
+        // in this file) within the same circle, then left-joins its content.
+        // checkin_content is forced-RLS: if this caregiver isn't permitted
+        // to see that row's content (visibility tier), the join simply
+        // returns null transcript/translation — shiftHeaderContext() already
+        // treats a missing text as noteHidden, so no separate visibility
+        // check is needed here; RLS does that work for free.
         `select s.id, s.circle_id, c.name as circle_name, s.starts_at, s.ends_at, s.purpose,
-                s.coordinator_note
+                s.coordinator_note,
+                prior.occurred_on::text as prior_occurred_on, prior.mood as prior_mood,
+                cc.transcript as prior_transcript, cc.translation as prior_translation
          from public.shifts s
          join public.circles c on c.id = s.circle_id
+         left join lateral (
+           select ch.id, ch.occurred_on, ch.mood
+           from public.checkins ch
+           where ch.circle_id = s.circle_id
+             and ch.occurred_on <= (s.starts_at at time zone c.timezone)::date
+           order by ch.occurred_on desc, ch.created_at desc
+           limit 1
+         ) prior on true
+         left join public.checkin_content cc on cc.checkin_id = prior.id
          where s.caregiver_id = $1 and s.starts_at >= now()
          order by s.starts_at`, [req.claims.sub],
       ),
     );
-    res.json({ shifts: rows.rows });
+    const shifts = rows.rows.map((r) => {
+      const { prior_occurred_on, prior_mood, prior_transcript, prior_translation, ...shift } = r;
+      const context = shiftHeaderContext(
+        prior_occurred_on
+          ? {
+              occurred_on: prior_occurred_on, mood: prior_mood,
+              transcript: prior_transcript ?? "", translation: prior_translation ?? "",
+            }
+          : null,
+        "", // tz param is unused by shiftHeaderContext's own logic
+      );
+      return { ...shift, context };
+    });
+    res.json({ shifts });
   }),
 );

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeAll, expect, test } from "vitest";
 import request from "supertest";
 import { createApp } from "../../src/http/app.js";
@@ -79,4 +80,58 @@ test("GET /api/my-shifts returns upcoming shifts across every circle, scoped to 
   // ("From your coordinator"), so a silently-missing field here isn't a
   // typecheck error, it's a caregiver never seeing a note that exists.
   expect(mine.coordinator_note).toBe("watch for the step by the door");
+});
+
+// The Caregiver frontend screen shows the elder's most recent mood + a note
+// excerpt before a shift starts ("From Fatima · Steady — 'quote'"). This was
+// never wired into /my-shifts — domain/careSignal.ts's shiftHeaderContext()
+// already existed and was already tested elsewhere, just never called from
+// any route. Wiring it in here (rather than duplicating the same logic as
+// client-side glue) reuses that tested logic and lets RLS's own
+// visibility-tier filtering do the "is this caregiver even allowed to see
+// her note" work for free — the query doesn't need its own visibility check.
+test("GET /api/my-shifts includes prior check-in context (mood + excerpt)", async () => {
+  const checkinId = randomUUID();
+  const c = admin(); await c.connect();
+  try {
+    // The base fixture already seeds several circleA1 checkins dated "today"
+    // (America/Toronto, mood 'ok') — matching that date, not an earlier one,
+    // so this row wins the "most recent" ordering on created_at (inserted
+    // after the fixture's own beforeAll setup) rather than losing to them.
+    //
+    // visibility='circle' is set on the CHECKINS row, not checkin_content:
+    // app.checkin_content_denorm() always overwrites checkin_content.visibility
+    // to match its parent checkins row on insert (checkin_content's own
+    // visibility argument is silently discarded) — confirmed by reading the
+    // trigger function directly after this test first failed with
+    // noteHidden=true despite an explicit visibility='circle' on the content
+    // insert. A1_caregiver_hired is not family/coordinator, so the default
+    // 'family' tier would have hidden this from her.
+    await c.query(
+      `insert into public.checkins (id, circle_id, occurred_on, mood, spoken_lang, visibility, recorded_by, is_proxy, created_via)
+       values ($1, $2, (now() at time zone 'America/Toronto')::date, 'hard', 'en', 'circle', $3, false, 'live')`,
+      [checkinId, fx.circleA1, fx.users.A1_coordinator],
+    );
+    await c.query(
+      `insert into public.checkin_content (checkin_id, circle_id, visibility, recorded_by, is_proxy, transcript, translation)
+       values ($1, $2, 'circle', $3, true, $4, $4)`,
+      [checkinId, fx.circleA1, fx.users.A1_coordinator, "Felt very tired and stayed in bed most of the day"],
+    );
+    await c.query(
+      `insert into public.shifts (circle_id, starts_at, ends_at, caregiver_id, purpose)
+       values ($1, now() + interval '1 day', now() + interval '1 day 2 hours', $2, 'morning visit')`,
+      [fx.circleA1, fx.users.A1_caregiver_hired],
+    );
+  } finally {
+    await c.end();
+  }
+
+  const jwt = await mintJwt({ sub: fx.users.A1_caregiver_hired, email: "cg@example.com" });
+  const res = await request(createApp()).get(`/api/my-shifts`).set(auth(jwt));
+  expect(res.status).toBe(200);
+  const mine = res.body.shifts.find((s: any) => s.circle_id === fx.circleA1 && s.purpose === "morning visit");
+  expect(mine).toBeTruthy();
+  expect(mine.context.mood).toBe("hard");
+  expect(mine.context.noteHidden).toBe(false);
+  expect(mine.context.excerpt).toBe("Felt very tired and stayed in bed most of the day");
 });
