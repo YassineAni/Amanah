@@ -1,50 +1,74 @@
-// Per-tab auth session. sessionStorage is tab-scoped, so 4 tabs can each hold a
-// different persona — exactly what the demo wants.
-import type { Role, User } from "./api";
+// Wraps Supabase auth's own session — no more per-tab persona demo hack.
+// The old version used sessionStorage specifically so 4 tabs could each
+// hold a different fake persona; with real magic-link auth there is one
+// real signed-in identity per browser, so this now rides Supabase's own
+// localStorage-backed session (shared across tabs, as a real identity
+// should be) instead of managing storage itself.
+//
+// setSession() and the old User-shaped session are gone: Supabase's client
+// manages sign-in/sign-out/refresh internally (supabase.auth.signInWithOtp,
+// the magic-link redirect completing via detectSessionInUrl, onAuthStateChange)
+// — there is no imperative "apply this session" call left for app code to
+// make. Role/circle information is NOT part of this file anymore either:
+// role now lives on a circle_members row, not the auth session, so
+// homeFor()/ROLE_LABEL moved to circle.tsx, which is what actually knows
+// the active circle's role.
+import { supabase } from "./supabaseClient";
+import type { Session as SupabaseSession } from "@supabase/supabase-js";
 
-const KEY = "her-day-session";
+export type Session = { token: string; userId: string; email: string };
 
-export type Session = { token: string; user: User };
-
-export function getSession(): Session | null {
-  try {
-    const raw = sessionStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Session) : null;
-  } catch {
-    return null;
-  }
+function fromSupabase(s: SupabaseSession | null): Session | null {
+  if (!s) return null;
+  return { token: s.access_token, userId: s.user.id, email: s.user.email ?? "" };
 }
 
-export function setSession(s: Session | null) {
-  try {
-    if (s) sessionStorage.setItem(KEY, JSON.stringify(s));
-    else sessionStorage.removeItem(KEY);
-  } catch {
-    /* private mode — session just won't persist across reloads */
-  }
+let current: Session | null = null;
+let resolved = false;
+const listeners = new Set<(s: Session | null) => void>();
+
+// getSession() is a Promise in supabase-js (it may need to read/refresh
+// from storage) — callers like api.ts's req() need a synchronous token
+// read, so this resolves once at module load and caches the result,
+// staying current afterward via onAuthStateChange (fires on sign-in,
+// sign-out, and token refresh alike).
+void supabase.auth.getSession().then(({ data }) => {
+  current = fromSupabase(data.session);
+  resolved = true;
+  listeners.forEach((cb) => cb(current));
+});
+
+supabase.auth.onAuthStateChange((_event, s) => {
+  current = fromSupabase(s);
+  resolved = true;
+  listeners.forEach((cb) => cb(current));
+});
+
+/** Synchronous read of the last-known session. Can be null even when a real
+ *  session exists in storage, until the initial async resolution completes
+ *  — see isSessionResolved()/onSessionChange() for gating render on that. */
+export function getSession(): Session | null {
+  return current;
 }
 
 export function getToken(): string | null {
-  return getSession()?.token ?? null;
+  return current?.token ?? null;
 }
 
-/** Route each role opens on after sign-in. */
-export function homeFor(user: Pick<User, "role" | "id">): string {
-  switch (user.role) {
-    case "elder":
-      return "/elder";
-    case "coordinator":
-      return "/coordinator";
-    case "caregiver":
-      return user.id === "cg-lea" ? "/caregiver?who=lea" : "/caregiver";
-    case "family":
-      return "/family";
-  }
+/** False until the very first getSession()/onAuthStateChange resolution —
+ *  the window where a real session could exist but hasn't loaded yet.
+ *  Route guards should show a loading state, not redirect to sign-in,
+ *  while this is false. */
+export function isSessionResolved(): boolean {
+  return resolved;
 }
 
-export const ROLE_LABEL: Record<Role, string> = {
-  elder: "Elder",
-  coordinator: "Coordinator",
-  caregiver: "Caregiver",
-  family: "Family",
-};
+/** Subscribe to session changes. Returns an unsubscribe function. */
+export function onSessionChange(cb: (s: Session | null) => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+export async function signOut(): Promise<void> {
+  await supabase.auth.signOut();
+}
