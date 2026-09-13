@@ -2,14 +2,14 @@ import { useState, type FormEvent } from "react";
 import { Redirect } from "wouter";
 import { supabase } from "./supabaseClient";
 import { getSession, isSessionResolved } from "./session";
-import { homeFor, useCircle } from "./circle";
+import { homeFor, noticeAccepted, useCircle } from "./circle";
 
 // Replaces the old persona-chip + username/password screen — magic-link
 // only (Q1, confirmed: no dev-persona shortcut). A real family signing in
 // for the pilot has an email, not a demo username.
 export function SignIn() {
   const session = getSession();
-  const { loading, activeCircle } = useCircle();
+  const { loading, profile, activeCircle } = useCircle();
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
@@ -24,9 +24,15 @@ export function SignIn() {
 
   // Already signed in: route onward rather than showing the sign-in form.
   // Mirrors RequireCircle's own redirects (circle.tsx) so a signed-in user
-  // landing on "/" doesn't just sit on the sign-in screen.
+  // landing on "/" doesn't just sit on the sign-in screen. Notice check
+  // MUST come before the circle check, same ordering as RequireCircle —
+  // this used to skip straight to /create-circle for a circle-less user,
+  // which meant a first-time signee could reach (and submit) the
+  // create-circle form having never seen /privacy-notice at all, only
+  // finding out via the server's 403 on submit.
   if (session) {
     if (loading) return null;
+    if (!noticeAccepted(profile)) return <Redirect to="/privacy-notice" />;
     return <Redirect to={activeCircle ? homeFor(activeCircle.role) : "/create-circle"} />;
   }
 

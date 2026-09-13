@@ -142,9 +142,17 @@ export type InviteInfo = { circleName: string; inviterName: string; role: Circle
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  // Machine-readable error tag from the response body (e.g.
+  // "notice_required" — see server/src/auth/middleware.ts), when the
+  // server sent one. Lets a caller branch on the specific failure (redirect
+  // to /privacy-notice) rather than pattern-matching the human-readable
+  // message or the bare HTTP status, which other routes can also return
+  // for unrelated reasons.
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -155,13 +163,15 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(API_BASE + path, { ...init, headers });
   if (!res.ok) {
     let msg = res.statusText;
+    let code: string | undefined;
     try {
       const body = await res.json();
       if (body?.error) msg = body.error;
+      if (typeof body?.code === "string") code = body.code;
     } catch {
       /* keep statusText */
     }
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, code);
   }
   if (res.status === 204) return undefined as T;
   const ct = res.headers.get("content-type") || "";

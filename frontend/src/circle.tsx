@@ -27,7 +27,11 @@ export const ROLE_LABEL: Record<CircleRole, string> = {
 // against this literal export.
 export const PRIVACY_NOTICE_VERSION = "2026-09-1c-v1";
 
-function noticeAccepted(profile: Profile | null): boolean {
+// Exported: SignIn.tsx needs this too (a freshly-signed-in user with no
+// circle yet must be sent to /privacy-notice before /create-circle, the
+// same ordering RequireCircle enforces below) — a second, drifted copy of
+// this check is exactly how that route ended up reachable without it.
+export function noticeAccepted(profile: Profile | null): boolean {
   // null = still loading or signed out — RequireCircle's earlier checks
   // (session, loading) already gate those cases before this ever matters.
   return !!profile && !!profile.tosAcceptedAt && profile.privacyNoticeVersion === PRIVACY_NOTICE_VERSION;
