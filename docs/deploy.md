@@ -127,6 +127,34 @@ is not deployed as of this writing (see README's Honest status section).
     database down before the app can reach it turns a config mistake into a
     full outage instead of a clear error.
 
+    **This will break `.github/workflows/nightly.yml`'s `sweep` and `backup`
+    jobs if you apply it as-is.** Both connect directly to Postgres using
+    `DATABASE_URL_ADMIN` (`sweepOrphans()` via `adminPool`, and `pg_dump` in
+    `server/scripts/backup.sh`) — but they run on GitHub-hosted Actions
+    runners, whose IPs are ephemeral and shared across every GitHub Actions
+    job on the platform, not the Fly app's dedicated address. There is no
+    stable IP to allowlist for them, and allowlisting GitHub's entire published
+    Actions IP range would defeat the point of this step (it's enormous and
+    shared with every other GitHub customer's workflows). Two real choices,
+    not a step to skip past:
+    - **Move nightly `sweep`/`backup` off GitHub Actions onto something running
+      inside Fly's network** — e.g. a [Fly Machines scheduled
+      run](https://fly.io/docs/machines/flyctl/fly-machine-run/#schedule) instead
+      of a GitHub Actions cron — so they share the same allowlisted IP as the API
+      itself. This is the architecturally correct fix and the one to actually do
+      before relying on this pilot for real; it's real work (rewriting how these
+      two jobs are triggered), not done as part of this branch.
+    - **Or**: don't apply this network restriction while nightly.yml stays on
+      GitHub Actions, and accept the "host compromise bypasses RLS" residual
+      risk (§6) as-is for now. A silently-broken nightly backup, discovered only
+      when you actually need to restore from one, is a worse outcome than not
+      having applied this hardening step yet.
+
+    Whichever you choose, don't apply the restriction and walk away — verify
+    the very next scheduled `nightly` run actually succeeds
+    (`gh run list --workflow=nightly.yml`), not just that `fly deploy` still
+    works.
+
 ## What CI automates after that
 
 On every push to `main`, `.github/workflows/deploy.yml` runs, in order:

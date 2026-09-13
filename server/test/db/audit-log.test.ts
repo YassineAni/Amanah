@@ -1,8 +1,9 @@
 import { beforeEach, expect, test } from "vitest";
+import { Client } from "pg";
 import request from "supertest";
 import { createApp } from "../../src/http/app.js";
 import { loadFixture, type Fixture } from "../db/fixture.js";
-import { mintJwt, admin } from "../db/clients.js";
+import { mintJwt, admin, APP_URL } from "../db/clients.js";
 import { logAudit } from "../../src/audit.js";
 import { uploadStaging, promoteStaging, deleteCircleAudio } from "../../src/storage/audio.js";
 
@@ -29,39 +30,58 @@ async function rows(): Promise<any[]> {
 // --- RLS lockdown: the whole point of this table is that the normal app
 // connection can never read or write it, only adminPool (BYPASSRLS). ---
 
-test("app_authenticated cannot read audit_log (RLS: zero rows, not an error)", async () => {
+// Deliberately a real connection as the actual app_authenticated role
+// (APP_URL), not SET ROLE from the admin connection — verified directly
+// (docker exec psql) that SET ROLE app_authenticated from the admin role
+// fails LOUDLY here ("permission denied to set role", since that role
+// membership was granted with inherit_option=false/set_option=false), not
+// silently — but a careless `try { SET ROLE ... } catch {}` around it
+// would swallow that error and go on to run these assertions as the
+// still-BYPASSRLS admin connection, producing a false pass on every one
+// of them. A real login sidesteps the whole question.
+test("app_authenticated cannot SELECT/INSERT/UPDATE/DELETE audit_log under any verb", async () => {
   const c = admin(); await c.connect();
-  await c.query(`insert into public.audit_log (actor_id, action) values ($1, 'test')`, [fx.users.A1_coordinator]);
+  const seeded = await c.query(
+    `insert into public.audit_log (actor_id, action) values ($1, 'test') returning id`,
+    [fx.users.A1_coordinator],
+  );
   await c.end();
+  const seededId = seeded.rows[0].id;
 
-  const appC = new (await import("pg")).Client({
-    connectionString: "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres",
-  });
+  const appC = new Client({ connectionString: APP_URL });
   await appC.connect();
   try {
     await appC.query("select set_config('request.jwt.claims', $1, true)",
       [JSON.stringify({ sub: fx.users.A1_coordinator, role: "authenticated" })]);
-    const res = await appC.query("select count(*)::int n from public.audit_log");
-    expect(res.rows[0].n).toBe(0);
-  } finally {
-    await appC.end();
-  }
-});
 
-test("app_authenticated cannot write audit_log (RLS violation)", async () => {
-  const appC = new (await import("pg")).Client({
-    connectionString: "postgresql://app_authenticated:app_authenticated@127.0.0.1:54122/postgres",
-  });
-  await appC.connect();
-  try {
-    await appC.query("select set_config('request.jwt.claims', $1, true)",
-      [JSON.stringify({ sub: fx.users.A1_coordinator, role: "authenticated" })]);
+    // The migration's explicit `revoke all ... from app_authenticated`
+    // means Postgres denies every verb at the PRIVILEGE layer, before RLS
+    // is even consulted — "permission denied for table audit_log", not
+    // "0 rows" or an RLS-specific message. This is the stronger of the two
+    // outcomes the two independent layers (grants + RLS) could produce;
+    // pinning it here means a regression in either layer alone would still
+    // be caught by one of these four assertions.
+    await expect(appC.query("select count(*) from public.audit_log")).rejects.toThrow(/permission denied/i);
     await expect(
       appC.query("insert into public.audit_log (actor_id, action) values ($1, 'test')", [fx.users.A1_coordinator]),
-    ).rejects.toThrow(/row-level security/i);
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      appC.query("update public.audit_log set action = 'tampered' where id = $1", [seededId]),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      appC.query("delete from public.audit_log where id = $1", [seededId]),
+    ).rejects.toThrow(/permission denied/i);
   } finally {
     await appC.end();
   }
+
+  // Confirm from the admin side that the seeded row is genuinely
+  // untouched — the four rejections above prove the queries never ran,
+  // but this closes the loop with a direct read of the actual row.
+  const c2 = admin(); await c2.connect();
+  const still = await c2.query("select action from public.audit_log where id = $1", [seededId]);
+  expect(still.rows[0]?.action).toBe("test");
+  await c2.end();
 });
 
 // --- logAudit() itself ---
@@ -80,7 +100,7 @@ test("logAudit writes a row via adminPool", async () => {
 
 // --- integration: each instrumented route actually logs ---
 
-test("GET /checkins logs checkins_list_access with a row count", async () => {
+test("GET /checkins logs checkins_list_access with the actual returned checkin ids", async () => {
   const jwt = await mintJwt({ sub: fx.users.A1_coordinator, email: "c@example.com" });
   const res = await request(createApp()).get(`/api/circles/${fx.circleA1}/checkins`).set(auth(jwt));
   expect(res.status).toBe(200);
@@ -89,7 +109,7 @@ test("GET /checkins logs checkins_list_access with a row count", async () => {
   expect(entry).toBeTruthy();
   expect(entry.actor_id).toBe(fx.users.A1_coordinator);
   expect(entry.circle_id).toBe(fx.circleA1);
-  expect(entry.metadata.count).toBe(res.body.length);
+  expect(entry.metadata.checkinIds.sort()).toEqual(res.body.map((c: any) => c.id).sort());
 });
 
 test("GET /checkins/:id/audio logs checkin_audio_access only on a successful signed-URL issuance", async () => {

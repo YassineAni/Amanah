@@ -21,6 +21,7 @@ people who built it, for the person who will decide whether it's ready.
 | Weekly care plan / daily tasks | `routine_items`, `completions`, `adhoc_tasks` | Until the circle is deleted | Any active member of the circle |
 | Name, email, language, notice-acceptance | `profiles` | Until the account's last circle membership ends (org owner rows persist until the org's circles are gone) | The person themself; a coordinator sees a circle-mate's name via `GET /circles/:cid/members` |
 | Circle membership + role | `circle_members` | Until removed from the circle or the circle is deleted | Any active member of the circle |
+| Audit trail: who accessed check-in audio/content, who deleted or removed what, when | `audit_log` | **Indefinite — no pruning job exists.** Deliberately outlives circle deletion (see §6): a circle-delete audit row must survive the circle it's about being gone, so nothing currently ages these rows out. Ordinary read traffic (viewing a circle's check-in list) grows this table too, not just incidents. | No one through the app — `app_authenticated` is fully blocked (RLS + an explicit table-level revoke, both independently verified). Only readable via a direct admin database connection, which today means the project owner, not a feature either app role can use. |
 
 Nothing else about the elder is collected. There is no location tracking, no device
 fingerprinting, no analytics pipeline, no third-party ad/tracking script anywhere in

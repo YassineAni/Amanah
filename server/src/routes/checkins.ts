@@ -29,7 +29,12 @@ checkinsRouter.get("/checkins", asyncHandler<AuthedRequest>(async (req, res) => 
        order by c.occurred_on desc, c.created_at desc`, [cid],
     ),
   );
-  await logAudit(req.claims.sub, "checkins_list_access", { circleId: cid, metadata: { count: rows.rows.length } });
+  // Storing the actual returned ids, not just a count — a review pointed
+  // out that "was checkin Y in what X was shown at time T" is answerable
+  // for the same cost as "how many rows did X see."
+  await logAudit(req.claims.sub, "checkins_list_access", {
+    circleId: cid, metadata: { checkinIds: rows.rows.map((r) => r.id) },
+  });
   res.json(rows.rows);
 }));
 

@@ -92,12 +92,17 @@ circlesRouter.delete(
     );
     if (owns.rowCount === 0) return res.status(403).json({ error: "only the org owner can delete a circle" });
     await withAdminTxn((q) => q.query(`delete from public.circles where id = $1`, [cid]));
-    await deleteCircleAudio(cid);
-    // circle_id has no FK constraint on audit_log by design (migration
-    // 20260913000001) — the record of "circle X was deleted by Y" must
-    // survive the circle itself being gone, which is exactly what just
-    // happened above.
+    // Logged immediately after the DB delete succeeds, BEFORE
+    // deleteCircleAudio(cid) — that's a Storage HTTPS round-trip, and if it
+    // threw with the log call after it, a crash there would mean the
+    // circle is gone from Postgres but the deletion was never logged (a
+    // review flagged this exact ordering gap). circle_id has no FK
+    // constraint on audit_log by design (this record must survive the
+    // circle itself being gone, which already happened by this line) —
+    // sweepOrphans is the existing safety net for storage cleanup that
+    // fails, so there's no need to gate this log on Storage succeeding too.
     await logAudit(claims.sub, "circle_delete", { circleId: cid });
+    await deleteCircleAudio(cid);
     res.status(204).end();
   }),
 );

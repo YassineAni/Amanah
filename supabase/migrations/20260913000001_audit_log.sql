@@ -31,3 +31,16 @@ create index audit_log_actor_idx on public.audit_log (actor_id, occurred_at desc
 -- entry.
 alter table public.audit_log enable row level security;
 alter table public.audit_log force row level security;
+
+-- Explicit REVOKE, not just RLS: 20260908000015_lockdown_grants.sql's
+-- `alter default privileges ... grant select, insert, update, delete on
+-- tables to app_authenticated` applies to every table created afterward,
+-- audit_log included — confirmed via information_schema.role_table_grants.
+-- RLS alone already fully blocks app_authenticated today (it's neither
+-- the table owner nor BYPASSRLS), so this is a second, independent layer,
+-- not a fix for a live hole — but for the one table whose entire purpose
+-- is being trustworthy forensic evidence, a future accidental permissive
+-- policy shouldn't be the ONLY thing standing between app_authenticated
+-- and this table. Costs nothing: adminPool connects as the table
+-- owner/BYPASSRLS role and is unaffected by table grants.
+revoke all on public.audit_log from app_authenticated;
