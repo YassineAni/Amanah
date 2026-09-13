@@ -1158,6 +1158,14 @@ function Coordinator() {
                         onChange={(e) => setInviteRole(e.target.value as CircleRole)}
                         className="min-h-11 rounded-xl border border-[#789a9b]/50 bg-white/60 p-2 outline-none focus:border-[#284c59]"
                      >
+                        {/* "elder" is a real, necessary option here, not an
+                            edge case: CreateCircle.tsx only ever makes its
+                            creator a coordinator — the elder herself has no
+                            membership in her own circle until someone
+                            invites her as one (server enforces exactly one
+                            elder per circle: circles.ts's accept handler
+                            409s a second elder-role accept). */}
+                        <option value="elder">Her (the elder)</option>
                         <option value="caregiver">Caregiver</option>
                         <option value="family">Family</option>
                         <option value="coordinator">Coordinator</option>
