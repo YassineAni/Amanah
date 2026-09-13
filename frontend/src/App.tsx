@@ -452,7 +452,13 @@ function Footer() {
 
 function Brand({ label, signOutLabel = "Sign out" }: { label: string; signOutLabel?: string }) {
    const [, setLocation] = useLocation();
-   const out = () => { stopSpeaking(); void sessionSignOut(); setLocation("/"); };
+   // Awaits sign-out before navigating (not fire-and-forget) — otherwise
+   // SignIn briefly renders while session.ts's cached session hasn't
+   // cleared yet (onAuthStateChange's SIGNED_OUT event fires a moment
+   // later), redirecting back to the role screen before bouncing to "/"
+   // again a beat after that. Self-correcting either way, but visibly
+   // flickery; this ordering avoids the flicker entirely.
+   const out = () => { stopSpeaking(); void sessionSignOut().then(() => setLocation("/")); };
    return (
       <header className="flex items-center justify-between border-b border-[#789a9b]/30 pb-5">
          <button onClick={out} className="flex items-center gap-3 text-start rounded-full focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#547e80]">
@@ -512,11 +518,27 @@ function Elder() {
    // signed URL, once the checkin is actually saved). Revoked on save/close
    // to avoid leaking it.
    const [review, setReview] = useState<{ transcript: string; translation: string; stagingPath: string | null; audioUrl?: string; via: "live" | "demo" } | null>(null);
+   // save()/closeRecord() both revoke review.audioUrl explicitly, but
+   // neither fires if the sheet is abandoned some other way — direct URL
+   // navigation, browser back, or sign-out while it's open. This mirror ref
+   // + unmount-only cleanup catches those paths too; revoking an
+   // already-revoked URL is a harmless no-op, so this can't double-free.
+   const reviewAudioUrl = useRef<string | undefined>(undefined);
+   reviewAudioUrl.current = review?.audioUrl;
+   useEffect(() => () => { if (reviewAudioUrl.current) URL.revokeObjectURL(reviewAudioUrl.current); }, []);
    const [arabicFirst, setArabicFirst] = useState(lang === "ar");
    const [mood, setMood] = useState<string>("good");
    const [share, setShare] = useState<string>("circle");
 
    const recorder = useRef<MediaRecorder | null>(null);
+   // Set by closeRecord() before runTranscribe() would otherwise fire (or
+   // while it's in flight) — this codebase has no AbortController wired
+   // through fetch anywhere, so a request already in flight when the user
+   // cancels still completes (the audio was already sent to OpenAI by
+   // then); this at minimum stops a cancelled recording from resurrecting
+   // a review UI afterward, and stops onstop from ever starting a new
+   // request at all in the common "stop then immediately close" case.
+   const cancelled = useRef(false);
    const isDemo = new URLSearchParams(window.location.search).get("demo") === "1";
 
    // her interface reads right-to-left when her language is Arabic
@@ -564,16 +586,18 @@ function Elder() {
       setRecErr(null);
       try {
          const r = await api.transcribe(cid, input, "ar");
+         if (cancelled.current) return; // she closed the sheet while this was in flight
          const audioUrl = input instanceof Blob ? URL.createObjectURL(input) : undefined;
          setReview({ transcript: r.transcript, translation: r.translation, stagingPath: r.stagingPath, audioUrl, via });
       } catch (e) {
-         setRecErr(e instanceof Error ? (via === "demo" ? t.exampleError : t.transcribeError) : t.transcribeError);
+         if (!cancelled.current) setRecErr(e instanceof Error ? (via === "demo" ? t.exampleError : t.transcribeError) : t.transcribeError);
       } finally {
-         setTranscribing(false);
+         if (!cancelled.current) setTranscribing(false);
       }
    };
 
    const start = async () => {
+      cancelled.current = false;
       setRecErr(null);
       if (isDemo) {
          try {
@@ -590,7 +614,12 @@ function Elder() {
          r.onstop = () => {
             stream.getTracks().forEach((track) => track.stop());
             setRecording(false);
-            void runTranscribe(new Blob(parts, { type: r.mimeType }), "live"); // auto-transcribe on stop
+            // Closing the sheet calls recorder.stop() (triggers this
+            // handler asynchronously) and sets cancelled.current = true
+            // synchronously beforehand — checking here stops the "stop
+            // then immediately close" race from ever starting a new
+            // transcribe request at all, not just from displaying its result.
+            if (!cancelled.current) void runTranscribe(new Blob(parts, { type: r.mimeType }), "live");
          };
          r.start();
          recorder.current = r;
@@ -611,6 +640,7 @@ function Elder() {
    };
 
    const closeRecord = () => {
+      cancelled.current = true;
       recorder.current?.stop();
       stopSpeaking();
       if (review?.audioUrl) URL.revokeObjectURL(review.audioUrl);
@@ -762,7 +792,7 @@ function Elder() {
                                  <option value="circle">{t.visCircle}</option>
                                  <option value="family">{t.visFamily}</option>
                                  <option value="coordinator">{t.visCoordinator}</option>
-                                 <option value="mood-only">{t.visMoodOnly}</option>
+                                 <option value="mood_only">{t.visMoodOnly}</option>
                               </select>
                            </label>
                         </div>
@@ -791,11 +821,11 @@ function Elder() {
                      {data.checkins.map((c) => (
                         <div className="glass flex items-center justify-between rounded-2xl p-4" key={c.id}>
                            <span>{fmt(c.date)}</span>
-                           <select value={c.visibility || "mood-only"} onChange={(e) => void updateVisibility(c.id, e.target.value as Visibility)} className="rounded-full border bg-white/40 p-1.5 outline-none">
+                           <select value={c.visibility || "mood_only"} onChange={(e) => void updateVisibility(c.id, e.target.value as Visibility)} className="rounded-full border bg-white/40 p-1.5 outline-none">
                               <option value="circle">{t.visCircleShort}</option>
                               <option value="family">{t.visFamilyShort}</option>
                               <option value="coordinator">{t.visCoordShort}</option>
-                              <option value="mood-only">{t.visMoodShort}</option>
+                              <option value="mood_only">{t.visMoodShort}</option>
                            </select>
                         </div>
                      ))}
@@ -926,6 +956,8 @@ function AddAdHoc({ onAdd }: { onAdd: (b: { title: string; time: string; categor
 
 function Coordinator() {
    const { data, updateShift, addRoutine, updateRoutine, deleteRoutine, toggleTask, refreshTasks } = useApp();
+   const { activeCircle } = useCircle();
+   const cid = activeCircle!.id;
    const [selected, setSelected] = useState<string | null>(null);
    const [planMode, setPlanMode] = useState<"daily" | "weekly">("daily");
    const [planWd, setPlanWd] = useState<number>(() => new Date().getDay());
@@ -956,6 +988,33 @@ function Coordinator() {
       if (!cgShift) return;
       void updateShift(cgShift.id, { coordinatorNote: msgVal });
       setMsgDraft(null);
+   };
+
+   // --- invite someone into this circle ---
+   // There was no UI anywhere for this at all — POST /circles/:cid/invites
+   // (server) and /invite/:token (the accept-side screen, Task 9) both
+   // existed with nothing between them. Found during a review of the full
+   // sign-up-through-accept flow; without this, a coordinator can create a
+   // circle but never actually add anyone else to it.
+   const [inviteEmail, setInviteEmail] = useState("");
+   const [inviteRole, setInviteRole] = useState<CircleRole>("caregiver");
+   const [inviteFamily, setInviteFamily] = useState(true);
+   const [inviteBusy, setInviteBusy] = useState(false);
+   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+   const [inviteErr, setInviteErr] = useState<string | null>(null);
+   const sendInvite = async () => {
+      const email = inviteEmail.trim();
+      if (!email) return;
+      setInviteBusy(true); setInviteErr(null); setInviteMsg(null);
+      try {
+         await api.createInvites(cid, [{ email, role: inviteRole, isFamilyMember: inviteFamily }]);
+         setInviteMsg(`Invite sent to ${email}.`);
+         setInviteEmail("");
+      } catch (e) {
+         setInviteErr(e instanceof Error ? e.message : "Couldn’t send that invite.");
+      } finally {
+         setInviteBusy(false);
+      }
    };
 
    // --- upcoming: one day at a time (pick any day from today on) ---
@@ -1076,6 +1135,51 @@ function Coordinator() {
                {savedNote && msgDraft === null && <p className="mt-3 text-sm text-[#42616a]">Sent to {cgName}: “{savedNote}”</p>}
             </section>
 
+            <section className="glass mt-7 rounded-3xl p-6">
+               <h2 className="serif text-2xl">Invite someone</h2>
+               <p className="mt-1 text-sm text-[#54717a]">They'll get an email with a link to join this circle.</p>
+               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <label className="block flex-1">
+                     <span className="block text-sm text-[#54717a] mb-1.5">Email</span>
+                     <input
+                        data-testid="input-invite-email"
+                        type="email"
+                        value={inviteEmail}
+                        onChange={(e) => { setInviteEmail(e.target.value); setInviteErr(null); }}
+                        placeholder="them@example.com"
+                        className="w-full min-h-11 rounded-xl border border-[#789a9b]/50 bg-white/60 px-3 text-[#1f3740] outline-none focus:border-[#284c59]"
+                     />
+                  </label>
+                  <label className="block">
+                     <span className="block text-sm text-[#54717a] mb-1.5">As</span>
+                     <select
+                        data-testid="select-invite-role"
+                        value={inviteRole}
+                        onChange={(e) => setInviteRole(e.target.value as CircleRole)}
+                        className="min-h-11 rounded-xl border border-[#789a9b]/50 bg-white/60 p-2 outline-none focus:border-[#284c59]"
+                     >
+                        <option value="caregiver">Caregiver</option>
+                        <option value="family">Family</option>
+                        <option value="coordinator">Coordinator</option>
+                     </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-[#54717a] sm:pb-2.5">
+                     <input type="checkbox" checked={inviteFamily} onChange={(e) => setInviteFamily(e.target.checked)} />
+                     Family member
+                  </label>
+                  <button
+                     data-testid="button-send-invite"
+                     onClick={() => void sendInvite()}
+                     disabled={inviteBusy || !inviteEmail.trim()}
+                     className="min-h-11 rounded-full bg-[#294e59] px-5 text-white disabled:opacity-40 transition hover:bg-[#1f3a44]"
+                  >
+                     {inviteBusy ? "Sending…" : "Send invite"}
+                  </button>
+               </div>
+               {inviteErr && <p role="alert" className="mt-3 text-sm text-[#8a2f24]">{inviteErr}</p>}
+               {inviteMsg && <p className="mt-3 text-sm text-[#2f6b4f]">{inviteMsg}</p>}
+            </section>
+
             <Footer />
          </div>
       </main>
@@ -1152,6 +1256,7 @@ function Family() {
    const cid = activeCircle!.id;
    const audio = useRef<HTMLAudioElement | null>(null);
    const [playing, setPlaying] = useState<string | null>(null);
+   const [playErr, setPlayErr] = useState<string | null>(null);
    const [tab, setTab] = useState<"words" | "plan">("words");
    const [openTask, setOpenTask] = useState<PlanRow | null>(null);
    const checkins = data.checkins;
@@ -1162,12 +1267,18 @@ function Family() {
       return () => window.clearInterval(iv);
    }, [refreshTasks]);
 
+   // Pause whatever's playing on unmount (navigating away mid-playback
+   // otherwise leaves it running in the background — the audio element
+   // isn't attached to anything the router unmounts on its own).
+   useEffect(() => () => audio.current?.pause(), []);
+
    // The checkin list no longer carries a ready-to-play audioUrl — audio_path
    // is only ever exposed as a 120s signed URL, fetched on demand
    // (GET /checkins/:id/audio), not embedded in every list response.
    const play = async (id: string) => {
       if (playing === id) { audio.current?.pause(); setPlaying(null); return; }
       if (audio.current) audio.current.pause();
+      setPlayErr(null);
       try {
          const { url } = await api.checkinAudioUrl(cid, id);
          const a = new Audio(url);
@@ -1176,6 +1287,9 @@ function Family() {
          await a.play();
          setPlaying(id);
       } catch {
+         // Previously silent — the button would just revert with no
+         // explanation on a network blip or an expired signed URL.
+         setPlayErr("Couldn’t play that recording. Please try again.");
          setPlaying(null);
       }
    };
@@ -1194,6 +1308,7 @@ function Family() {
             {tab === "words" ? (
                <>
                   <h1 className="serif pb-6 text-4xl md:text-6xl">Her own words, each evening.</h1>
+                  {playErr && <p role="alert" className="mb-4 text-sm text-[#8a2f24]">{playErr}</p>}
                   {checkins.map((c) => (
                      <article className="glass mb-4 rounded-3xl p-6 md:grid md:grid-cols-[190px_1fr]" key={c.id}>
                         <div>

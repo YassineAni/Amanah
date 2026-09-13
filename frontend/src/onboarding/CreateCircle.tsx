@@ -1,14 +1,24 @@
 import { useState } from "react";
-import { useLocation } from "wouter";
+import { Redirect, useLocation } from "wouter";
 import { api } from "../api";
-import { useCircle } from "../circle";
+import { homeFor, useCircle } from "../circle";
 
 // Shown when a signed-in, notice-accepted user has zero circles (Q6,
 // confirmed: straight to this screen, no "you're not in a circle yet"
 // landing first).
 export function CreateCircle() {
-  const { refresh } = useCircle();
+  const { activeCircle, refresh } = useCircle();
   const [, setLocation] = useLocation();
+
+  // Guard against re-entry once a circle already exists — this screen is
+  // reachable via a stale link/back-button, and without this the form would
+  // just create a SECOND circle. Also closes a related gap: since
+  // activeCircle is always circles[0] ordered by creation time (Q7 — no
+  // switcher), a newly created circle is never circles[0] for a user who
+  // already had one, so "create another circle" would silently strand them
+  // on a screen that redirects to their OLD circle's role, not the one they
+  // just made.
+  if (activeCircle) return <Redirect to={homeFor(activeCircle.role)} />;
   const [elderName, setElderName] = useState("");
   const [elderLang, setElderLang] = useState<"ar" | "en" | "fr">("ar");
   const [attest, setAttest] = useState(false);

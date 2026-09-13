@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Redirect } from "wouter";
 import { supabase } from "./supabaseClient";
-import { getSession } from "./session";
+import { getSession, isSessionResolved } from "./session";
 import { homeFor, useCircle } from "./circle";
 
 // Replaces the old persona-chip + username/password screen — magic-link
@@ -14,6 +14,13 @@ export function SignIn() {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Same guard RequireCircle uses (circle.tsx) — session.ts resolves
+  // asynchronously, so on a hard refresh while already signed in,
+  // getSession() briefly returns null before that resolution completes.
+  // Without this check, an already-authenticated user would see the full
+  // sign-in form flash before the redirect below ever fires.
+  if (!isSessionResolved()) return null;
 
   // Already signed in: route onward rather than showing the sign-in form.
   // Mirrors RequireCircle's own redirects (circle.tsx) so a signed-in user
