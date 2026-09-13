@@ -1,5 +1,10 @@
 app = "amanah-api"
-primary_region = "yul"
+# yyz (Toronto), not yul (Montreal) — the plan's original choice. yul is
+# deprecated on Fly and cannot provision new resources as of this deploy
+# (confirmed directly: `fly deploy` refused with "Region yul is deprecated").
+# Still Canada, still close to Supabase's ca-central-1 — the actual intent
+# (data-minimization, not a specific-city requirement) is unaffected.
+primary_region = "yyz"
 
 [build]
 

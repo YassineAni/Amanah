@@ -1,7 +1,19 @@
 # Pre-pilot privacy assessment
 
-**Status: not signed off. No real elder's data may enter this system until the sign-off
-line at the bottom of this document is dated and initialed by the project owner.**
+**Status: signed off 2026-09-13 — see §7.** (This line originally read "not signed
+off"; it's the rule the document enforces, kept here so the rule stays visible even
+after signing: no real elder's data may enter this system until the sign-off line at
+the bottom is dated and initialed by the project owner. That happened; §7 has the
+record.)
+
+**Amended 2026-09-13, after sign-off:** two post-signature corrections, both flagged
+to the project owner when made and neither changing what §7 authorized. (1) Fly's
+`yul` region, referenced in §2, turned out to be deprecated on Fly (confirmed directly
+by a real `fly deploy` refusal) — corrected to `yyz`, still Canada, still the same
+data-minimization intent. (2) §6's deployment-status language has been updated now
+that the API server is actually live (see `docs/deploy.md`'s status line) — the
+residual risks themselves are unchanged, only the "nothing is deployed yet" framing,
+which is no longer true.
 
 This document exists because Amanah's first real users will be an actual elderly
 person and her actual family, not fictional demo data — and because Part 1c is the
@@ -33,7 +45,7 @@ this codebase.
 sent to `api.openai.com` (Whisper for transcription/translation, `tts-1` for the
 elder's own read-aloud feature) and back. Nothing else — no shift data, no plan data,
 no member list — ever leaves this system's own infrastructure (Supabase `ca-central-1`,
-Fly.io `yul`).
+Fly.io `yyz`).
 
 **Legal basis relied on for the pilot:** explicit, informed consent, captured at
 sign-up via the privacy notice every user must accept before creating or joining a
@@ -50,7 +62,7 @@ assurance, not a technical guarantee this codebase enforces.
 days, present on a US company's infrastructure, subject to US law (including the
 possibility of US government legal process reaching that data while it's there,
 independent of anything Canadian law would otherwise require). Choosing Supabase's
-`ca-central-1` region and Fly's `yul` region for the rest of the system is a
+`ca-central-1` region and Fly's `yyz` region for the rest of the system is a
 data-minimization choice — it keeps everything else in Canada — **it is not a
 compliance certification and does not change this specific residual risk for the
 portion of data that necessarily transits OpenAI's US endpoints.** Anyone relying on
@@ -118,9 +130,10 @@ directly (e.g. by asking whoever invited them).
   object older than 24 hours that no `checkin_content.audio_path` references (covers
   abandoned staging uploads and orphans left by the single-checkin-deletion gap in §4).
 - **Both jobs are currently dormant** (gated behind a `DEPLOYED` repo variable — see
-  `docs/deploy.md` step 10) until Part 1c's deploy actually happens. They do not run
-  today, against nothing deployed; this is stated here so "nightly backups exist" isn't
-  read as true before it actually is.
+  `docs/deploy.md` step 10). The API server itself is now deployed, but the CI secrets
+  and the `DEPLOYED` variable these jobs need (`docs/deploy.md` steps 9–10) have not
+  been set up yet, so they still do not run; this is stated here so "nightly backups
+  exist" isn't read as true before it actually is.
 - `server/scripts/restore-test.sh` proves a backup is actually restorable — spins a
   fresh local Supabase, loads the dump, runs the integration test suite against it.
   This is a manual script, not on an automated schedule. **Recommended cadence:
@@ -138,8 +151,10 @@ directly (e.g. by asking whoever invited them).
   reduced, not eliminated:** `docs/deploy.md` step 12 restricts the database to only
   accept connections from the Fly app's own IP (Supabase Network Restrictions) — this
   shrinks who/what can even attempt a raw connection, but does nothing once the host
-  itself is the thing making that connection. Not yet applied — it's a deploy-time
-  step, and nothing is deployed yet.
+  itself is the thing making that connection. The API server is now deployed and live
+  (`amanah-api.fly.dev`, `yyz`); this specific hardening step (step 12) has not been
+  applied yet — it has a known, unresolved conflict with `nightly.yml`'s GitHub Actions
+  jobs that needs an architectural decision first (see `docs/deploy.md` step 12).
 - **Audit log — now real, not absent.** A dedicated `audit_log` table (migration
   `20260913000001`, `server/src/audit.ts`) records who accessed check-in audio, who
   listed a circle's check-ins, and every destructive/membership action (check-in
@@ -151,10 +166,13 @@ directly (e.g. by asking whoever invited them).
   database RLS itself lives in — a host compromise that bypasses RLS could also alter
   or erase audit rows. A meaningfully stronger version would ship logs to storage the
   compromised host can't reach; out of scope for this pilot.
-- **Single API instance, single Postgres project.** No redundancy. An outage means the
-  elder cannot check in that night and no one can see the schedule until it's back —
-  an availability risk, not a confidentiality one, but worth naming: this pilot has no
-  failover.
+- **Single region, single Postgres project — no failover.** In practice Fly runs 2
+  machines for the API (its own default for zero-downtime deploys, verified via
+  `fly status`), but both are in the same region (`yyz`) behind the same single
+  Postgres project; there is no multi-region redundancy and no standby database. An
+  outage of `yyz` or of the Supabase project means the elder cannot check in that
+  night and no one can see the schedule until it's back — an availability risk, not a
+  confidentiality one, but worth naming: this pilot has no real failover.
 - **The cross-border OpenAI transfer** (§2) is a residual risk independent of
   everything above, already covered there in detail — repeated here only as a pointer,
   not to understate it by omission from this list.

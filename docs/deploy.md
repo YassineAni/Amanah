@@ -1,8 +1,15 @@
 # Deploy runbook
 
 One-time manual setup for the first deploy, plus what `.github/workflows/deploy.yml`
-automates on every push to `main` after that. Nothing here has been run yet — Amanah
-is not deployed as of this writing (see README's Honest status section).
+automates on every push to `main` after that.
+
+**Current status (2026-09-13):** steps 1–6 are done — the Supabase project
+(`qstnrggzorkwusslfmbg`, `ca-central-1`) and the Fly app (`amanah-api`, `yyz`) are both
+live, verified (see `git log` on `fix/fly-region-deprecated-yul-to-yyz` for the exact
+checks run: `/api/health` 200, a real DB-touching route confirming Postgres
+connectivity, JWT/JWKS verification confirmed). Steps 7 onward (static frontend host,
+Auth redirect allow-list, GitHub CI secrets, `DEPLOYED` variable, the frontend deploy
+action, and the database network restriction) have not been started.
 
 ## Prerequisites
 
@@ -12,8 +19,10 @@ is not deployed as of this writing (see README's Honest status section).
 
 ## One-time manual steps
 
-1. **Create the Supabase project** (`ca-central-1` — closest region to `yul`, and the
-   region choice matters for the pilot's data-residency posture — see
+1. **Create the Supabase project** (`ca-central-1` — closest region to `yyz`, Fly's
+   Toronto region (`yul`/Montreal, the plan's original choice, is deprecated on Fly
+   and cannot provision new resources — confirmed directly), and the region choice
+   matters for the pilot's data-residency posture — see
    `docs/pilot-privacy-assessment.md`, Task 15):
    ```bash
    supabase projects create amanah --region ca-central-1
@@ -32,15 +41,51 @@ is not deployed as of this writing (see README's Honest status section).
    privileges — that grant only takes effect once the role exists, so this step must
    happen before `db push`, not after.
 
-3. **Link and push migrations:**
+   > **A real gotcha, verified against an actual freshly-created project**:
+   > `db.<ref>.supabase.co` (the direct-connection hostname) resolves IPv6-only for new
+   > projects — no A record at all, only AAAA — unless the paid IPv4 add-on is enabled.
+   > If your connecting machine/network can't route IPv6 (common on a home network doing
+   > this from a laptop, not necessarily a problem for Fly's own network later), a direct
+   > `psql`/`pg` connection will fail with `ENOTFOUND` even though DNS itself resolves
+   > fine. For a one-off task like this (not the app's actual runtime connection, which
+   > stays on direct/5432 per step 5's note below), connect via the session pooler
+   > instead — it has real IPv4 addresses: `postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`.
+
+3. **Link, then actually apply the `[api].schemas` exclusion to the remote project —
+   `db push` alone does NOT do this.** `supabase db push` only pushes migrations
+   (schema/data), never `config.toml`'s `[api]`/`[auth]`/etc settings — verified
+   directly against a real fresh project: PostgREST exposed `public` by default until
+   this step ran. Skipping it means PostgREST serves the tenant tables directly over
+   REST, completely bypassing this API server's RLS-claims-binding — the single most
+   important invariant this whole project depends on.
    ```bash
    supabase link --project-ref <ref>
    ```
-   Before pushing, confirm the linked project's `supabase/config.toml` still has
-   `[api].schemas` excluding `public` (PostgREST must never see the tenant tables
-   directly — RLS-gated access goes through this API server, not PostgREST).
+   `supabase config push` pushes **every** property declared in `supabase/config.toml`,
+   all-or-nothing — and several of those are deliberately loosened for local dev
+   convenience (e.g. `auth.email.max_frequency = "1s"`, `otp_length = 6`,
+   `enable_confirmations = false`), not something you want live in production. Don't run
+   a blanket `config push`. Instead, push a config declaring ONLY the `[api]` section:
    ```bash
-   supabase db push
+   mkdir -p /tmp/supabase-api-only/supabase
+   cat > /tmp/supabase-api-only/supabase/config.toml <<'EOF'
+   project_id = "Amanah"
+
+   [api]
+   enabled = true
+   schemas = ["graphql_public"]
+   extra_search_path = ["extensions"]
+   EOF
+   cd /tmp/supabase-api-only
+   supabase config diff --project-ref <ref>   # confirm "counts.update" is 2 (api.schemas,
+                                                # api.extra_search_path) and nothing else
+   supabase config push --project-ref <ref> --yes
+   cd -   # back to the real repo
+   ```
+   Then push migrations. If `supabase db push` alone hits the same IPv6-only direct
+   connection issue noted in step 2, point it at the pooler explicitly:
+   ```bash
+   supabase db push --db-url "postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
    ```
 
 4. **Launch the Fly app** (from `server/`, using the committed `fly.toml`):
@@ -113,7 +158,7 @@ is not deployed as of this writing (see README's Honest status section).
     (PostgREST/Storage/Auth), only direct Postgres, which is exactly what
     `DATABASE_URL`/`DATABASE_URL_ADMIN` use:
     ```bash
-    # From server/, once `fly launch` (step 5) has created the app: allocate a
+    # From server/, once `fly launch` (step 4) has created the app: allocate a
     # dedicated (static) IPv4 so there's a fixed address to allowlist — Fly's
     # default shared IP is not stable enough to allowlist.
     fly ips allocate-v4
@@ -123,7 +168,7 @@ is not deployed as of this writing (see README's Honest status section).
     Restrictions → add that address as a `/32` CIDR (and the project's own
     Postgres/pooler default is otherwise "open" until you add at least one
     restriction, so this step has no effect until done). Do this *after*
-    confirming `fly deploy` (step 7) actually works end-to-end — locking the
+    confirming `fly deploy` (step 6) actually works end-to-end — locking the
     database down before the app can reach it turns a config mistake into a
     full outage instead of a clear error.
 
