@@ -33,7 +33,7 @@ this codebase.
 sent to `api.openai.com` (Whisper for transcription/translation, `tts-1` for the
 elder's own read-aloud feature) and back. Nothing else — no shift data, no plan data,
 no member list — ever leaves this system's own infrastructure (Supabase `ca-central-1`,
-Fly.io `yul`).
+Fly.io `yyz`).
 
 **Legal basis relied on for the pilot:** explicit, informed consent, captured at
 sign-up via the privacy notice every user must accept before creating or joining a
@@ -50,7 +50,7 @@ assurance, not a technical guarantee this codebase enforces.
 days, present on a US company's infrastructure, subject to US law (including the
 possibility of US government legal process reaching that data while it's there,
 independent of anything Canadian law would otherwise require). Choosing Supabase's
-`ca-central-1` region and Fly's `yul` region for the rest of the system is a
+`ca-central-1` region and Fly's `yyz` region for the rest of the system is a
 data-minimization choice — it keeps everything else in Canada — **it is not a
 compliance certification and does not change this specific residual risk for the
 portion of data that necessarily transits OpenAI's US endpoints.** Anyone relying on

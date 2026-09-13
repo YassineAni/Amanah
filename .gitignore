@@ -29,3 +29,6 @@ Thumbs.db
 # Supabase local stack
 supabase/.branches/
 supabase/.temp/
+
+# Local-only deploy secrets, never committed
+.secrets/
