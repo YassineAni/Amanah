@@ -8,6 +8,7 @@ import { utterances } from "../domain/utterances.js";
 import { resolveSpokenLang, demoTranscribe, liveTranscribe } from "../domain/transcribe.js";
 import { uploadStaging, promoteStaging, signedUrl } from "../storage/audio.js";
 import { asyncHandler } from "../http/asyncHandler.js";
+import { logAudit } from "../audit.js";
 
 export const checkinsRouter = Router({ mergeParams: true });
 checkinsRouter.use(requireAuth, requireNoticeAccepted, requireCircle());
@@ -28,6 +29,7 @@ checkinsRouter.get("/checkins", asyncHandler<AuthedRequest>(async (req, res) => 
        order by c.occurred_on desc, c.created_at desc`, [cid],
     ),
   );
+  await logAudit(req.claims.sub, "checkins_list_access", { circleId: cid, metadata: { count: rows.rows.length } });
   res.json(rows.rows);
 }));
 
@@ -172,6 +174,7 @@ checkinsRouter.delete("/checkins/:id", asyncHandler<AuthedRequest>(async (req, r
       [req.params.id, req.params.cid]),
   );
   if (r.rowCount === 0) return res.status(403).json({ error: "cannot delete this check-in" });
+  await logAudit(req.claims.sub, "checkin_delete", { circleId: req.params.cid, targetId: req.params.id });
   res.status(204).end();
 }));
 
@@ -185,5 +188,6 @@ checkinsRouter.get("/checkins/:id/audio", asyncHandler<AuthedRequest>(async (req
   const path = row.rows[0]?.audio_path;
   if (!path) return res.status(403).json({ error: "not permitted" });
   const url = await signedUrl(path, 120);
+  await logAudit(req.claims.sub, "checkin_audio_access", { circleId: req.params.cid, targetId: req.params.id });
   res.json({ url, expires_at: new Date(Date.now() + 120_000).toISOString() });
 }));
