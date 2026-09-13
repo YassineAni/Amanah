@@ -1,8 +1,15 @@
 # Deploy runbook
 
 One-time manual setup for the first deploy, plus what `.github/workflows/deploy.yml`
-automates on every push to `main` after that. Nothing here has been run yet — Amanah
-is not deployed as of this writing (see README's Honest status section).
+automates on every push to `main` after that.
+
+**Current status (2026-09-13):** steps 1–6 are done — the Supabase project
+(`qstnrggzorkwusslfmbg`, `ca-central-1`) and the Fly app (`amanah-api`, `yyz`) are both
+live, verified (see `git log` on `fix/fly-region-deprecated-yul-to-yyz` for the exact
+checks run: `/api/health` 200, a real DB-touching route confirming Postgres
+connectivity, JWT/JWKS verification confirmed). Steps 7 onward (static frontend host,
+Auth redirect allow-list, GitHub CI secrets, `DEPLOYED` variable, the frontend deploy
+action, and the database network restriction) have not been started.
 
 ## Prerequisites
 
@@ -41,7 +48,7 @@ is not deployed as of this writing (see README's Honest status section).
    > this from a laptop, not necessarily a problem for Fly's own network later), a direct
    > `psql`/`pg` connection will fail with `ENOTFOUND` even though DNS itself resolves
    > fine. For a one-off task like this (not the app's actual runtime connection, which
-   > stays on direct/5432 per step 6's note below), connect via the session pooler
+   > stays on direct/5432 per step 5's note below), connect via the session pooler
    > instead — it has real IPv4 addresses: `postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`.
 
 3. **Link, then actually apply the `[api].schemas` exclusion to the remote project —
@@ -151,7 +158,7 @@ is not deployed as of this writing (see README's Honest status section).
     (PostgREST/Storage/Auth), only direct Postgres, which is exactly what
     `DATABASE_URL`/`DATABASE_URL_ADMIN` use:
     ```bash
-    # From server/, once `fly launch` (step 5) has created the app: allocate a
+    # From server/, once `fly launch` (step 4) has created the app: allocate a
     # dedicated (static) IPv4 so there's a fixed address to allowlist — Fly's
     # default shared IP is not stable enough to allowlist.
     fly ips allocate-v4
@@ -161,7 +168,7 @@ is not deployed as of this writing (see README's Honest status section).
     Restrictions → add that address as a `/32` CIDR (and the project's own
     Postgres/pooler default is otherwise "open" until you add at least one
     restriction, so this step has no effect until done). Do this *after*
-    confirming `fly deploy` (step 7) actually works end-to-end — locking the
+    confirming `fly deploy` (step 6) actually works end-to-end — locking the
     database down before the app can reach it turns a config mistake into a
     full outage instead of a clear error.
 

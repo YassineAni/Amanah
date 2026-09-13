@@ -94,7 +94,7 @@ too much churn before a customer).
 ```
 Browser (React 19 + Vite SPA)
   |  supabase-js: auth (magic-link JWT in localStorage)
-  |  fetch: Authorization: Bearer <supabase jwt>  -->  Express API (Fly.io, yul)
+  |  fetch: Authorization: Bearer <supabase jwt>  -->  Express API (Fly.io, yyz)
   |                                                     |  verify JWT (Supabase JWKS)
   |                                                     |  withUserTxn(): pg pool as app_authenticated,
   |                                                     |    one BEGIN..COMMIT, set_config(claims,$1,true)
@@ -713,7 +713,7 @@ Supabase Storage, **one private bucket**: `audio`, objects at
 | Piece | Choice |
 |---|---|
 | Database / Auth / Storage | Supabase, project region **`ca-central-1`** |
-| API | Express container on **Fly.io**, primary region **`yul`**, 1 instance |
+| API | Express container on **Fly.io**, primary region **`yyz`** (`yul` deprecated on Fly post-spec — see D10 note) |
 | Frontend | Vite static build on Vercel or Cloudflare Pages |
 | Migrations | `supabase/migrations/*.sql`, applied by `supabase db push` in CI |
 
@@ -878,7 +878,7 @@ home uses `GET /today`.
 | D7 | **Proxy check-ins allowed** — coordinator/caregiver only, always labelled, elder retains control | Safety net for elders who cannot use a phone; not a surveillance channel. |
 | D8 | `coordinator` check-in visibility **excludes the elder** for a proxy entry's words | A care worker's private observation. The elder still sees the entry, its mood, and who made it; her own check-ins stay fully elder-controlled. A pilot family can widen the tier. |
 | D9 | UI in **EN only** for the MVP; voice input **language-agnostic**; Arabic + French UI deferred | Removes RTL work, the French translation work, and the native-review dependency. Whisper translates to English only for now. |
-| D10 | Region **`ca-central-1`** / Fly `yul` — as **data minimisation**, not a compliance claim | Keeps personal data in-country by default; the OpenAI transfer is handled separately (§12). A permanent infra choice. |
+| D10 | Region **`ca-central-1`** / Fly `yul` — as **data minimisation**, not a compliance claim | Keeps personal data in-country by default; the OpenAI transfer is handled separately (§12). A permanent infra choice. **Superseded 2026-09-13:** `yul` deprecated on Fly (confirmed via a real `fly deploy` refusal — cannot provision new resources there); moved to `yyz` (Toronto). Same data-minimisation intent, still Canada, still close to Supabase `ca-central-1` — the decision's substance is unchanged, only the specific city. |
 | D11 | Keep Express + add Supabase (Approach 1) | Least churn; domain logic stays testable in TS; shortest path to a pilot. |
 | D12 | Check-in words/audio live in a separate **`checkin_content`** table with its own RLS tier policy — not a redaction view | A `security_invoker` view is bypassable via the base table; a `SECURITY DEFINER` view relocates the tenant check into a view definition. A child table with real RLS returns **zero rows** to a non-permitted viewer. |
 | D13 | Every RLS policy targets **`app_authenticated`**; `anon` / `authenticated` have all grants revoked and PostgREST's schema is pinned empty | The Express API becomes the only path to data; a stray `TO authenticated` policy can't quietly open a direct PostgREST hole. |
