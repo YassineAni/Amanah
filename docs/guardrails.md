@@ -8,7 +8,6 @@ Non-negotiable. If a feature idea violates one, the idea is wrong, not the guard
 
 The system records the elder's account. It never assesses or advises.
 
-**Absent by design — do not add, even if a demo would look better:**
 
 - Diagnoses, medication dosages/schedules as fields, vitals thresholds, triage logic
 - **Mood scoring of any kind** — no 1–5 scale, no PHQ-9 or other instrument, no computed average, index, or "wellbeing score", no trend number
