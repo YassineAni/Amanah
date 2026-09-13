@@ -101,6 +101,32 @@ is not deployed as of this writing (see README's Honest status section).
     chosen host's official deploy action, e.g. `amondnet/vercel-action` or
     `cloudflare/pages-action`, once the host is chosen in step 7).
 
+12. **Restrict the database to Fly's network** (recommended — closes part of the
+    "a compromised host bypasses RLS entirely" risk named in
+    `docs/pilot-privacy-assessment.md` §6: this doesn't remove that risk, but it
+    means the *only* thing on the internet that can even attempt a raw Postgres
+    connection is the Fly app itself, not anyone who obtains the connection
+    string some other way). Supabase's
+    [Network Restrictions](https://supabase.com/docs/guides/platform/network-restrictions)
+    feature enforces an IP allowlist on Postgres/pooler connections before
+    traffic reaches the database — note it does *not* cover the HTTPS APIs
+    (PostgREST/Storage/Auth), only direct Postgres, which is exactly what
+    `DATABASE_URL`/`DATABASE_URL_ADMIN` use:
+    ```bash
+    # From server/, once `fly launch` (step 5) has created the app: allocate a
+    # dedicated (static) IPv4 so there's a fixed address to allowlist — Fly's
+    # default shared IP is not stable enough to allowlist.
+    fly ips allocate-v4
+    fly ips list          # note the dedicated v4 address
+    ```
+    Then, in the Supabase dashboard: Project Settings → Database → Network
+    Restrictions → add that address as a `/32` CIDR (and the project's own
+    Postgres/pooler default is otherwise "open" until you add at least one
+    restriction, so this step has no effect until done). Do this *after*
+    confirming `fly deploy` (step 7) actually works end-to-end — locking the
+    database down before the app can reach it turns a config mistake into a
+    full outage instead of a clear error.
+
 ## What CI automates after that
 
 On every push to `main`, `.github/workflows/deploy.yml` runs, in order:

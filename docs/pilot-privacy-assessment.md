@@ -133,10 +133,23 @@ directly (e.g. by asking whoever invited them).
   the same process. RLS is the correctness boundary between tenants and between
   visibility tiers — it is not a security boundary against the API server's own host
   being compromised. Anyone with code execution on that host has effectively
-  unrestricted access to every circle's data, elder audio included.
-- **No audit log.** There is no record of who viewed which check-in, when, or from
-  where. If something goes wrong, there is no way to forensically reconstruct access
-  after the fact — only what the database's current state shows.
+  unrestricted access to every circle's data, elder audio included. **Partially
+  reduced, not eliminated:** `docs/deploy.md` step 12 restricts the database to only
+  accept connections from the Fly app's own IP (Supabase Network Restrictions) — this
+  shrinks who/what can even attempt a raw connection, but does nothing once the host
+  itself is the thing making that connection. Not yet applied — it's a deploy-time
+  step, and nothing is deployed yet.
+- **Audit log — now real, not absent.** A dedicated `audit_log` table (migration
+  `20260913000001`, `server/src/audit.ts`) records who accessed check-in audio, who
+  listed a circle's check-ins, and every destructive/membership action (check-in
+  deletion, circle deletion, member removal) — actor, circle, target, timestamp.
+  RLS-locked the same way the audio bucket is: `app_authenticated` cannot read or
+  write it under any circumstance, only the server's admin connection can, and that's
+  verified by test, not assumed. This does not cover every read path (e.g. an
+  individual check-in's mood isn't separately logged), and it lives in the same
+  database RLS itself lives in — a host compromise that bypasses RLS could also alter
+  or erase audit rows. A meaningfully stronger version would ship logs to storage the
+  compromised host can't reach; out of scope for this pilot.
 - **Single API instance, single Postgres project.** No redundancy. An outage means the
   elder cannot check in that night and no one can see the schedule until it's back —
   an availability risk, not a confidentiality one, but worth naming: this pilot has no
