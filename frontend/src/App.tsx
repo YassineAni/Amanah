@@ -1,28 +1,30 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState, createContext, useContext } from "react";
 import { createPortal } from "react-dom";
-import { Route, Switch, useLocation, Link, Redirect } from "wouter";
+import { Route, Switch, useLocation, Redirect } from "wouter";
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, MessageSquare, Mic, Play, Quote, Volume2, X } from "lucide-react";
-import { api, ApiError, audioSrc, type CareSignal, type Checkin, type Mood, type MyShift, type PlanRow, type PrayerTimes, type Role, type RoutineItem, type Shift, type TaskCategory, type User, type Visibility } from "./api";
-import { getSession, setSession, homeFor } from "./session";
+import { api, ApiError, type CareSignal, type Checkin, type CircleRole, type Member, type Mood, type MyShift, type PlanRow, type RoutineItem, type Shift, type TaskCategory, type Visibility } from "./api";
+import { signOut as sessionSignOut } from "./session";
+import { CircleProvider, RequireCircle, homeFor, useCircle } from "./circle";
+import { SignIn } from "./SignIn";
+import { PrivacyNotice } from "./onboarding/PrivacyNotice";
+import { CreateCircle } from "./onboarding/CreateCircle";
+import { AcceptInvite } from "./onboarding/AcceptInvite";
 import { speak, stopSpeaking, readAloudEnabled, setReadAloud } from "./speak";
 import { strings } from "./i18n";
-import { FileSidebar } from "./FileSidebar";
 
 type EnrichedShift = Shift & { caregiverIsFamily?: boolean };
 type Data = {
-   demoDate: string;
-   hasCheckinToday: boolean;
+   demoDate: string; // "today" from the active circle's own perspective (api.today's date field)
    shifts: EnrichedShift[];
    checkins: Checkin[];
    careSignal: CareSignal | null;
-   people: User[];
-   prayer: PrayerTimes | null;
-   myShift: MyShift | null;
+   members: Member[];
+   myShifts: MyShift[]; // across every circle the caregiver belongs to
    tasks: PlanRow[];
    routine: RoutineItem[];
    planDate: string;
 };
-const EMPTY: Data = { demoDate: "", hasCheckinToday: false, shifts: [], checkins: [], careSignal: null, people: [], prayer: null, myShift: null, tasks: [], routine: [], planDate: "" };
+const EMPTY: Data = { demoDate: "", shifts: [], checkins: [], careSignal: null, members: [], myShifts: [], tasks: [], routine: [], planDate: "" };
 
 const M: Record<string, [string, string]> = { good: ["●", "Good"], ok: ["◑", "Steady"], hard: ["▢", "Hard"] };
 const MOOD_TAG: Record<string, { word: string; bg: string; fg: string }> = {
@@ -43,7 +45,6 @@ function MoodTag({ mood, size = "md" }: { mood: "good" | "ok" | "hard" | null; s
       </span>
    );
 }
-const TAG_LABEL: Record<string, string> = { garden: "garden", outing: "outing", physio: "physiotherapy", companionship: "companionship", "personal-care": "personal-care", errands: "errands" };
 const date = (s: string) => new Date(s);
 const fmt = (s: string) => date(s).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 const time = (s: string) => date(s).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -53,7 +54,7 @@ const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-di
 const CAT: Record<TaskCategory, { label: string; fg: string; bg: string }> = {
    medication: { label: "Medication", fg: "#a23b2e", bg: "#f6e2de" },
    meal: { label: "Meal", fg: "#8a6416", bg: "#f6ecd6" },
-   "personal-care": { label: "Personal care", fg: "#2f6a7a", bg: "#dcecef" },
+   personal_care: { label: "Personal care", fg: "#2f6a7a", bg: "#dcecef" },
    rest: { label: "Rest", fg: "#5b4b8a", bg: "#e9e5f4" },
    activity: { label: "Activity", fg: "#3f7a4a", bg: "#e1efe4" },
    other: { label: "Task", fg: "#54717a", bg: "#e7edec" },
@@ -243,7 +244,7 @@ function RoutinePlanner({ routine, selectedWd, setSelectedWd, onAdd, onOpen }: {
    const [repeat, setRepeat] = useState<"day" | "everyday" | "weekdays">("day");
    const items = routine.filter((r) => r.weekdays.includes(selectedWd)).sort((a, b) => (a.time < b.time ? -1 : 1));
    const wdFor = () => (repeat === "everyday" ? [0, 1, 2, 3, 4, 5, 6] : repeat === "weekdays" ? [1, 2, 3, 4, 5] : [selectedWd]);
-   const ts = cat === "medication" || cat === "rest" || cat === "personal-care";
+   const ts = cat === "medication" || cat === "rest" || cat === "personal_care";
    return (
       <div className="mt-4">
          <div className="flex gap-1">
@@ -285,25 +286,20 @@ function RoutinePlanner({ routine, selectedWd, setSelectedWd, onAdd, onOpen }: {
 // ---------------------------------------------------------------------------
 
 type AppValue = {
-   session: ReturnType<typeof getSession>;
    data: Data;
    loading: boolean;
    error: string | null;
-   signIn: (username: string, password: string) => Promise<User>;
-   signInAs: (userId: string) => Promise<User>;
-   signOut: () => void;
    refresh: () => Promise<void>;
    refreshTasks: () => Promise<void>;
-   createCheckin: (body: Parameters<typeof api.createCheckin>[0]) => Promise<void>;
+   createCheckin: (body: Omit<Parameters<typeof api.createCheckin>[1], "occurredOn">) => Promise<void>;
    updateVisibility: (id: string, vis: Visibility) => Promise<void>;
-   updateShift: (id: string, body: Parameters<typeof api.updateShift>[1]) => Promise<void>;
+   updateShift: (id: string, body: Parameters<typeof api.updateShift>[2]) => Promise<void>;
    toggleTask: (key: string, done: boolean, note?: string) => Promise<void>;
-   addAdHoc: (body: Omit<Parameters<typeof api.addAdHoc>[0], "date">) => Promise<void>;
+   addAdHoc: (body: Omit<Parameters<typeof api.addAdHoc>[1], "date">) => Promise<void>;
    deleteAdHoc: (key: string) => Promise<void>;
-   addRoutine: (body: Parameters<typeof api.addRoutine>[0]) => Promise<void>;
-   updateRoutine: (id: string, body: Parameters<typeof api.updateRoutine>[1]) => Promise<void>;
+   addRoutine: (body: Parameters<typeof api.addRoutine>[1]) => Promise<void>;
+   updateRoutine: (id: string, body: Parameters<typeof api.updateRoutine>[2]) => Promise<void>;
    deleteRoutine: (id: string) => Promise<void>;
-   resetDemo: () => Promise<void>;
 };
 const AppContext = createContext<AppValue | null>(null);
 export const useApp = () => {
@@ -312,115 +308,98 @@ export const useApp = () => {
    return v;
 };
 
+// Mounted INSIDE RequireCircle for each role route (see App() at the bottom
+// of this file) — by the time this renders, RequireCircle has already
+// guaranteed a signed-in user with an accepted notice and an active circle,
+// so this is purely "given that circle + role, fetch the role-specific
+// data," not auth/session/circle-membership plumbing (circle.tsx's job now).
 function AppProvider({ children }: { children: ReactNode }) {
-   const [session, setSess] = useState(getSession());
+   const { activeCircle, role } = useCircle();
+   const cid = activeCircle!.id; // RequireCircle guarantees this is non-null here
    const [data, setData] = useState<Data>(EMPTY);
    const [loading, setLoading] = useState(false);
    const [error, setError] = useState<string | null>(null);
 
    const refresh = useCallback(async () => {
-      const s = getSession();
-      if (!s) return;
       setLoading(true);
       setError(null);
       try {
-         const today = await api.today();
-         const base: Partial<Data> = {
-            demoDate: today.date ?? "",
-            hasCheckinToday: today.hasCheckin ?? false,
-            prayer: today.prayerTimes ?? null,
-         };
-         const demoDate = base.demoDate || "";
-         if (s.user.role === "elder") {
-            const [shifts, checkins] = await Promise.all([api.shifts(), api.checkins()]);
+         const today = await api.today(cid);
+         const demoDate = today.date ?? "";
+         const base: Partial<Data> = { demoDate };
+         if (role === "elder") {
+            const [shifts, checkins] = await Promise.all([api.shifts(cid), api.checkins(cid)]);
             setData({ ...EMPTY, ...base, shifts, checkins });
-         } else if (s.user.role === "coordinator") {
-            const [careSignal, shifts, people, plan, routine] = await Promise.all([api.careSignal(), api.shifts(), api.people(), api.tasks(demoDate), api.routine()]);
-            const enriched = shifts.map((sh) => ({ ...sh, caregiverIsFamily: people.find((p) => p.id === sh.caregiverId)?.isFamily ?? false }));
-            setData({ ...EMPTY, ...base, demoDate: careSignal.demoDate || demoDate, careSignal, shifts: enriched, people, tasks: plan.tasks, routine, planDate: plan.date });
-         } else if (s.user.role === "caregiver") {
-            const myShift = await api.myShift();
-            const planDay = myShift.shift ? myShift.shift.start.slice(0, 10) : demoDate;
-            const plan = await api.tasks(planDay);
-            setData({ ...EMPTY, ...base, myShift, tasks: plan.tasks, planDate: plan.date });
+         } else if (role === "coordinator") {
+            const [careSignal, shifts, members, plan, routine] =
+               await Promise.all([api.careSignal(cid), api.shifts(cid), api.members(cid), api.tasks(cid, demoDate), api.routine(cid)]);
+            const enriched = shifts.map((sh) => ({ ...sh, caregiverIsFamily: members.find((m) => m.id === sh.caregiverId)?.isFamilyMember ?? false }));
+            setData({ ...EMPTY, ...base, careSignal, shifts: enriched, members, tasks: plan.tasks, routine, planDate: plan.date });
+         } else if (role === "caregiver") {
+            const all = await api.myShifts();
+            // Scoped to the active circle, not every circle this caregiver
+            // is in — the rest of this screen (tasks/plan) is already
+            // active-circle-scoped (Q7: circles[0], no switcher), so a
+            // shift from a DIFFERENT family's circle showing here would be
+            // inconsistent with the plan panel right below it, and would
+            // reveal cross-family membership on a screen not designed to
+            // disambiguate that.
+            const myShifts = all.filter((s) => s.circleId === cid);
+            const planDay = myShifts[0] ? myShifts[0].start.slice(0, 10) : demoDate;
+            const plan = await api.tasks(cid, planDay);
+            setData({ ...EMPTY, ...base, myShifts, tasks: plan.tasks, planDate: plan.date });
          } else {
-            const [checkins, plan] = await Promise.all([api.checkins(), api.tasks(demoDate)]);
+            const [checkins, plan] = await Promise.all([api.checkins(cid), api.tasks(cid, demoDate)]);
             setData({ ...EMPTY, ...base, checkins, tasks: plan.tasks, planDate: plan.date });
          }
       } catch (e) {
-         if (e instanceof ApiError && e.status === 401) {
-            setSession(null);
-            setSess(null);
-         }
+         if (e instanceof ApiError && e.status === 401) void sessionSignOut();
          setError(e instanceof Error ? e.message : "Something went wrong");
       } finally {
          setLoading(false);
       }
-   }, []);
+   }, [cid, role]);
 
-   useEffect(() => { if (session) void refresh(); /* eslint-disable-next-line */ }, [session?.token]);
+   useEffect(() => { void refresh(); }, [refresh]);
 
-   // switching back to a tab picks up changes made in another persona's tab
+   // switching back to a tab picks up changes made elsewhere
    useEffect(() => {
-      const onFocus = () => { if (getSession()) void refresh(); };
+      const onFocus = () => void refresh();
       window.addEventListener("focus", onFocus);
       return () => window.removeEventListener("focus", onFocus);
    }, [refresh]);
 
-   const applySession = (token: string, user: User) => {
-      const s = { token, user };
-      setSession(s);
-      setSess(s);
-      return user;
-   };
-   const signIn = async (username: string, password: string) => {
-      const { token, user } = await api.login({ username, password });
-      return applySession(token, user);
-   };
-   const signInAs = async (userId: string) => {
-      const { token, user } = await api.login({ userId });
-      return applySession(token, user);
-   };
-   const signOut = () => {
-      stopSpeaking();
-      setSession(null);
-      setSess(null);
-      setData(EMPTY);
-   };
-
    const dataRef = useRef(data);
    dataRef.current = data;
    const refreshTasks: AppValue["refreshTasks"] = useCallback(async () => {
-      if (!getSession()) return;
       const d = dataRef.current;
       try {
          const [plan, routine] = await Promise.all([
-            api.tasks(d.planDate || d.demoDate || undefined),
-            getSession()?.user.role === "coordinator" ? api.routine() : Promise.resolve(d.routine),
+            api.tasks(cid, d.planDate || d.demoDate || undefined),
+            role === "coordinator" ? api.routine(cid) : Promise.resolve(d.routine),
          ]);
          setData((cur) => ({ ...cur, tasks: plan.tasks, planDate: plan.date, routine }));
       } catch { /* keep what we have */ }
-   }, []);
+   }, [cid, role]);
 
-   const createCheckin: AppValue["createCheckin"] = async (body) => { await api.createCheckin(body); await refresh(); };
-   const updateVisibility: AppValue["updateVisibility"] = async (id, vis) => { await api.setVisibility(id, vis); await refresh(); };
-   const updateShift: AppValue["updateShift"] = async (id, body) => { await api.updateShift(id, body); await refresh(); };
+   const createCheckin: AppValue["createCheckin"] = async (body) => { await api.createCheckin(cid, body); await refresh(); };
+   const updateVisibility: AppValue["updateVisibility"] = async (id, vis) => { await api.setVisibility(cid, id, vis); await refresh(); };
+   const updateShift: AppValue["updateShift"] = async (id, body) => { await api.updateShift(cid, id, body); await refresh(); };
    const toggleTask: AppValue["toggleTask"] = async (key, done, note) => {
       setData((d) => ({ ...d, tasks: d.tasks.map((t) => (t.key === key ? { ...t, doneAt: done ? (t.doneAt ?? new Date().toISOString()) : null, note: note ?? t.note } : t)) }));
-      try { await api.toggleTask({ date: dataRef.current.planDate || dataRef.current.demoDate, key, done, note }); } finally { await refreshTasks(); }
+      try { await api.toggleTask(cid, { date: dataRef.current.planDate || dataRef.current.demoDate, key, done, note }); } finally { await refreshTasks(); }
    };
-   const addAdHoc: AppValue["addAdHoc"] = async (body) => { await api.addAdHoc({ ...body, date: dataRef.current.planDate || dataRef.current.demoDate }); await refreshTasks(); };
+   const addAdHoc: AppValue["addAdHoc"] = async (body) => { await api.addAdHoc(cid, { ...body, date: dataRef.current.planDate || dataRef.current.demoDate }); await refreshTasks(); };
    const deleteAdHoc: AppValue["deleteAdHoc"] = async (key) => {
       setData((d) => ({ ...d, tasks: d.tasks.filter((t) => t.key !== key) }));
-      try { await api.deleteAdHoc(key.replace(/^a:/, "")); } finally { await refreshTasks(); }
+      try { await api.deleteAdHoc(cid, key.replace(/^a:/, "")); } finally { await refreshTasks(); }
    };
-   const addRoutine: AppValue["addRoutine"] = async (body) => { await api.addRoutine(body); await refreshTasks(); };
-   const updateRoutine: AppValue["updateRoutine"] = async (id, body) => { await api.updateRoutine(id, body); await refreshTasks(); };
-   const deleteRoutine: AppValue["deleteRoutine"] = async (id) => { await api.deleteRoutine(id); await refreshTasks(); };
-   const resetDemo: AppValue["resetDemo"] = async () => { await api.resetDemo(); await refresh(); };
+   const addRoutine: AppValue["addRoutine"] = async (body) => { await api.addRoutine(cid, body); await refreshTasks(); };
+   const updateRoutine: AppValue["updateRoutine"] = async (id, body) => { await api.updateRoutine(cid, id, body); await refreshTasks(); };
+   const deleteRoutine: AppValue["deleteRoutine"] = async (id) => { await api.deleteRoutine(cid, id); await refreshTasks(); };
 
    return (
-      <AppContext.Provider value={{ session, data, loading, error, signIn, signInAs, signOut, refresh, refreshTasks, createCheckin, updateVisibility, updateShift, toggleTask, addAdHoc, deleteAdHoc, addRoutine, updateRoutine, deleteRoutine, resetDemo }}>
+      <AppContext.Provider value={{ data, loading, error, refresh, refreshTasks, createCheckin, updateVisibility, updateShift, toggleTask, addAdHoc, deleteAdHoc, addRoutine, updateRoutine, deleteRoutine }}>
          {children}
       </AppContext.Provider>
    );
@@ -432,15 +411,23 @@ function Screen({ children }: { children: ReactNode }) {
    return <main className="ocean min-h-screen p-6 grid place-items-center"><div className="text-center">{children}</div></main>;
 }
 
-function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
-   const { session, data, error, refresh } = useApp();
-   if (!session) return <Redirect to="/" />;
-   if (session.user.role !== role) return <Redirect to={homeFor(session.user)} />;
-   const ar = session.user.lang === "ar";
+// RequireRole is gone — circle.tsx's RequireCircle now owns session/notice/
+// circle/role gating (it has the info to do that; this component never
+// did). What's left here is narrower: AppProvider's OWN role-specific data
+// fetch (shifts/checkins/tasks/etc) hasn't necessarily resolved yet even
+// once RequireCircle has cleared a screen to render — this holds the
+// screen until that first load completes, same as the old RequireRole's
+// second half did. English-only, same reasoning as RequireCircle: the
+// bilingual copy here depended on session.user.lang, which doesn't exist
+// at this layer anymore (Elder's own screen still has real ar/en support
+// for its own content, via i18n.ts — this is just the generic data-loading
+// gate every role route shares).
+function RequireData({ children }: { children: ReactNode }) {
+   const { data, error, refresh } = useApp();
    const firstLoad = !data.demoDate; // no data yet this session
-   if (firstLoad && error) return <Screen><p className="serif text-2xl text-[#1f3740]">{ar ? "تعذّر تحميل هذا." : "We couldn’t load this."}</p><p className="mt-2 text-[#54717a]">{error}</p><button onClick={() => void refresh()} className="mt-5 min-h-11 rounded-full bg-[#284c59] px-6 text-white">{ar ? "أعد المحاولة" : "Try again"}</button></Screen>;
+   if (firstLoad && error) return <Screen><p className="serif text-2xl text-[#1f3740]">We couldn’t load this.</p><p className="mt-2 text-[#54717a]">{error}</p><button onClick={() => void refresh()} className="mt-5 min-h-11 rounded-full bg-[#284c59] px-6 text-white">Try again</button></Screen>;
    // hold the screen until the first data arrives — components assume it's there
-   if (firstLoad) return <Screen><p className="serif text-2xl text-[#1f3740]">{ar ? "لحظة واحدة…" : "One moment…"}</p></Screen>;
+   if (firstLoad) return <Screen><p className="serif text-2xl text-[#1f3740]">One moment…</p></Screen>;
    return <>{children}</>;
 }
 
@@ -465,13 +452,12 @@ function Footer() {
 
 function Brand({ label, signOutLabel = "Sign out" }: { label: string; signOutLabel?: string }) {
    const [, setLocation] = useLocation();
-   const { signOut } = useApp();
-   const out = () => { signOut(); setLocation("/"); };
+   const out = () => { stopSpeaking(); void sessionSignOut(); setLocation("/"); };
    return (
       <header className="flex items-center justify-between border-b border-[#789a9b]/30 pb-5">
          <button onClick={out} className="flex items-center gap-3 text-start rounded-full focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#547e80]">
-            <span className="grid h-10 w-10 place-items-center rounded-full border border-white/80 bg-white/45 font-semibold">H</span>
-            <b className="text-[#1f3740]">Her Day</b>
+            <span className="grid h-10 w-10 place-items-center rounded-full border border-white/80 bg-white/45 font-semibold">A</span>
+            <b className="text-[#1f3740]">Amanah</b>
          </button>
          <div className="flex items-center gap-4">
             <span className="text-sm text-[#58767d] hidden sm:inline">{label}</span>
@@ -486,8 +472,10 @@ function Brand({ label, signOutLabel = "Sign out" }: { label: string; signOutLab
 const UILANG_KEY = "her-day-uilang";
 
 function Elder() {
-   const { session, data, createCheckin, updateVisibility } = useApp();
-   const name = session?.user.name ?? "";
+   const { data, createCheckin, updateVisibility } = useApp();
+   const { profile, activeCircle } = useCircle();
+   const cid = activeCircle!.id;
+   const name = profile?.fullName ?? "";
 
    // Her interface defaults to her own language; this toggle lets her (or a
    // helper) switch, and the choice sticks. The button itself is pinned to a
@@ -497,7 +485,7 @@ function Elder() {
          const saved = sessionStorage.getItem(UILANG_KEY);
          if (saved === "ar" || saved === "en") return saved;
       } catch { /* ignore */ }
-      return session?.user.lang === "ar" ? "ar" : "en";
+      return profile?.uiLang === "ar" ? "ar" : "en";
    });
    const toggleLang = () => {
       const next = uiLang === "ar" ? "en" : "ar";
@@ -518,7 +506,12 @@ function Elder() {
    const [recording, setRecording] = useState(false);
    const [transcribing, setTranscribing] = useState(false);
    const [recErr, setRecErr] = useState<string | null>(null);
-   const [review, setReview] = useState<{ transcript: string; translation: string; audioId?: string; audioUrl?: string; via: "live" | "demo" } | null>(null);
+   // audioUrl (when present) is a client-side object URL of the just-recorded
+   // Blob, not a server URL — there is no signed URL to play back yet at
+   // review time (staging_path is only promoted to a real object, with a
+   // signed URL, once the checkin is actually saved). Revoked on save/close
+   // to avoid leaking it.
+   const [review, setReview] = useState<{ transcript: string; translation: string; stagingPath: string | null; audioUrl?: string; via: "live" | "demo" } | null>(null);
    const [arabicFirst, setArabicFirst] = useState(lang === "ar");
    const [mood, setMood] = useState<string>("good");
    const [share, setShare] = useState<string>("circle");
@@ -570,8 +563,9 @@ function Elder() {
       setTranscribing(true);
       setRecErr(null);
       try {
-         const r = await api.transcribe(input, "ar");
-         setReview({ transcript: r.transcript, translation: r.translation, audioId: r.audioId, audioUrl: r.audioUrl, via });
+         const r = await api.transcribe(cid, input, "ar");
+         const audioUrl = input instanceof Blob ? URL.createObjectURL(input) : undefined;
+         setReview({ transcript: r.transcript, translation: r.translation, stagingPath: r.stagingPath, audioUrl, via });
       } catch (e) {
          setRecErr(e instanceof Error ? (via === "demo" ? t.exampleError : t.transcribeError) : t.transcribeError);
       } finally {
@@ -583,7 +577,7 @@ function Elder() {
       setRecErr(null);
       if (isDemo) {
          try {
-            const list = await api.demoUtterances();
+            const list = await api.demoUtterances(cid);
             await runTranscribe({ demoUtteranceId: list[0]?.id ?? "u1" }, "demo");
          } catch { setRecErr(t.exampleError); }
          return;
@@ -611,11 +605,17 @@ function Elder() {
 
    const save = async () => {
       if (!review) return;
-      await createCheckin({ mood: mood as Mood, transcript: review.transcript, translation: review.translation, audioId: review.audioId, spokenLang: "ar", visibility: share as Visibility, createdVia: review.via });
+      await createCheckin({ mood: mood as Mood, transcript: review.transcript, translation: review.translation, stagingPath: review.stagingPath, visibility: share as Visibility });
+      if (review.audioUrl) URL.revokeObjectURL(review.audioUrl);
       setReview(null); setSheet(null); setRecErr(null);
    };
 
-   const closeRecord = () => { recorder.current?.stop(); stopSpeaking(); setSheet(null); setReview(null); setRecErr(null); setTranscribing(false); setRecording(false); };
+   const closeRecord = () => {
+      recorder.current?.stop();
+      stopSpeaking();
+      if (review?.audioUrl) URL.revokeObjectURL(review.audioUrl);
+      setSheet(null); setReview(null); setRecErr(null); setTranscribing(false); setRecording(false);
+   };
 
    const toggleRA = () => { const n = !readAloud; setRA(n); setReadAloud(n); if (!n) stopSpeaking(); };
 
@@ -741,7 +741,11 @@ function Elder() {
                                  <p dir="rtl" className="mt-3 text-base text-[#54717a]">{review.transcript}</p>
                               </>
                            )}
-                           {review.audioUrl && <audio controls src={audioSrc(review.audioUrl)} className="mt-4 w-full" aria-label={t.yourRecording} />}
+                           {/* review.audioUrl is a client-side object URL of the just-recorded
+                               Blob (see runTranscribe) — no server signed URL exists yet at
+                               review time, so this plays back straight from the browser's
+                               own memory, not through the API. */}
+                           {review.audioUrl && <audio controls src={review.audioUrl} className="mt-4 w-full" aria-label={t.yourRecording} />}
                         </div>
                         <div className="mt-8 text-start max-w-sm mx-auto space-y-6">
                            <fieldset>
@@ -906,7 +910,7 @@ function AddAdHoc({ onAdd }: { onAdd: (b: { title: string; time: string; categor
    const [title, setTitle] = useState("");
    const [t, setT] = useState("15:00");
    const [cat, setCat] = useState<TaskCategory>("other");
-   const timeSensitive = cat === "medication" || cat === "rest" || cat === "personal-care";
+   const timeSensitive = cat === "medication" || cat === "rest" || cat === "personal_care";
    if (!open) return <button onClick={() => setOpen(true)} className="mt-4 text-sm text-[#284c59] underline">+ Add something you did</button>;
    return (
       <div className="mt-4 flex flex-wrap items-end gap-2">
@@ -934,33 +938,11 @@ function Coordinator() {
    }, [refreshTasks]);
 
    const care = data.careSignal!;
-   const caregivers = data.people.filter((p) => p.role === "caregiver");
+   const caregivers = data.members.filter((m) => m.role === "caregiver");
    const doneCount = data.tasks.filter((t) => t.doneAt).length;
    const now = data.demoDate ? date(data.demoDate) : new Date();
    const future = data.shifts.filter((s) => date(s.start) >= now).sort((a, b) => +date(a.start) - +date(b.start));
-
-   const amina = caregivers.find((p) => p.name === "Amina");
-   const target = future.find((s) => s.caregiverIsFamily === false && s.caregiverId !== amina?.id) || future.find((s) => s.caregiverIsFamily === false);
    const day = care.days.find((d) => d.date === selected) || care.days[care.days.length - 1];
-
-   // --- what her good/hard days lined up with ---
-   const tally: Record<string, { good: number; hard: number }> = {};
-   care.days.forEach((d) => {
-      if (!d.mood) return;
-      new Set(d.shifts.flatMap((s) => s.tags)).forEach((t) => {
-         tally[t] = tally[t] || { good: 0, hard: 0 };
-         if (d.mood === "good") tally[t].good++;
-         else if (d.mood === "hard") tally[t].hard++;
-      });
-   });
-   const bestGood = Object.entries(tally).filter(([, t]) => t.good).sort((a, b) => b[1].good - a[1].good)[0];
-   const worstHard = Object.entries(tally).filter(([, t]) => t.hard).sort((a, b) => b[1].hard - a[1].hard)[0];
-
-   const move = () => {
-      if (target && amina) {
-         void updateShift(target.id, { caregiverId: amina.id, activityTags: Array.from(new Set([...target.activityTags, "garden"])) });
-      }
-   };
 
    // --- message a caregiver (one box, targets that caregiver's next visit) ---
    const [msgCg, setMsgCg] = useState<string>("");
@@ -981,19 +963,15 @@ function Coordinator() {
    const upDays = Array.from(new Set(future.map((s) => s.start.slice(0, 10))));
    const activeDay = pickDay || upDays[0] || data.demoDate;
    const dayShifts = future.filter((s) => s.start.slice(0, 10) === activeDay);
-   const warn = (s: Shift) => data.prayer ? Object.values(data.prayer).some((t) => {
-      const [h, m] = t.split(":").map(Number);
-      const p = new Date(s.start);
-      p.setHours(h, m, 0, 0);
-      const gap = +p - +date(s.start);
-      return gap >= 0 && gap <= 1800000;
-   }) : false;
 
    return (
       <main className="ocean min-h-screen p-5 md:p-10">
          <div className="mx-auto max-w-[1180px]">
             <Brand label="Care coordination" />
-            <h1 className="serif py-10 text-5xl md:text-7xl">{care.callout ?? "A quieter week — no clear pattern yet."}</h1>
+            {/* care.callout doesn't exist on the wire (CareSignal has no such
+                field in the new API) — this was always a fallback-only
+                headline in practice, so it's just the static text now. */}
+            <h1 className="serif py-10 text-5xl md:text-7xl">A quieter week — no clear pattern yet.</h1>
 
             <section className="glass rounded-3xl p-6">
                <h2 className="serif text-2xl">Mood ribbon</h2>
@@ -1042,29 +1020,12 @@ function Coordinator() {
             {openTask && <TaskCard row={openTask} canCheck onToggle={toggleTask} onClose={() => setOpenTask(null)} />}
             {openRoutine && <RoutineCard item={openRoutine} onSave={(p) => void updateRoutine(openRoutine.id, p)} onDelete={() => void deleteRoutine(openRoutine.id)} onClose={() => setOpenRoutine(null)} />}
 
-            <section className="mt-7 grid gap-6 lg:grid-cols-2">
-               <article className="glass rounded-3xl p-6">
-                  <p className="text-xs font-medium uppercase tracking-[.14em] text-[#54717a]">Suggested move</p>
-                  {target && amina ? (
-                     <>
-                        <h2 className="serif mt-3 text-2xl leading-snug text-[#1f3740]">
-                           Give {date(target.start).toLocaleDateString(undefined, { weekday: "long" })}’s visit to {amina.name}, and add a garden walk.
-                        </h2>
-                        {bestGood && (
-                           <p className="mt-3 text-sm text-[#54717a]">
-                              Her good days this week were {TAG_LABEL[bestGood[0]] ?? bestGood[0]} days{worstHard ? "; her hard days weren’t" : ""}.
-                           </p>
-                        )}
-                        <button data-testid="button-apply-suggested-move" onClick={move} className="mt-5 inline-flex min-h-11 items-center rounded-full bg-[#294e59] px-6 text-white transition hover:bg-[#1f3a44]">
-                           Apply
-                        </button>
-                     </>
-                  ) : (
-                     <h2 className="serif mt-3 text-2xl leading-snug text-[#1f3740]">Her week looks balanced — nothing to move.</h2>
-                  )}
-               </article>
-
-               <article className="glass rounded-3xl p-6">
+            {/* "Suggested move" removed entirely (Q2) — it had no data source
+                in the new API (no correlation/pattern-insight endpoint
+                exists). The section wrapper's lg:grid-cols-2 is gone with
+                it — Upcoming is the only thing left here now. */}
+            <section className="mt-7">
+               <article className="glass rounded-3xl p-6 max-w-xl">
                   <h2 className="serif text-2xl">Upcoming</h2>
                   <div className="mt-4">
                      <DayCalendar value={activeDay} visitDays={upDays} today={data.demoDate} onChange={setPickDay} />
@@ -1076,7 +1037,6 @@ function Coordinator() {
                      <div className="mt-4 border-t border-[#789a9b]/30 pt-4" key={s.id}>
                         <p>{time(s.start)} — {time(s.end)} · {s.caregiverName ?? "Unassigned"}</p>
                         <p className="text-sm text-[#42616a]">{s.purpose} · {s.activityTags.join(", ")}</p>
-                        {warn(s) && <p className="mt-2 text-sm text-[#58767d]">A gentle note: this visit begins close to a prayer time.</p>}
                         <select className="mt-3 rounded-xl border border-[#789a9b]/50 bg-white/40 p-2 outline-none w-full max-w-xs" value={s.caregiverId || ""} onChange={(e) => void updateShift(s.id, { caregiverId: e.target.value || null })}>
                            <option value="">Unassigned</option>
                            {caregivers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1118,7 +1078,6 @@ function Coordinator() {
 
             <Footer />
          </div>
-         <FileSidebar />
       </main>
    );
 }
@@ -1127,8 +1086,12 @@ function Coordinator() {
 
 function Caregiver() {
    const { data, toggleTask, addAdHoc, deleteAdHoc, refreshTasks } = useApp();
-   const s = data.myShift?.shift ?? null;
-   const c = data.myShift?.context ?? null;
+   const { activeCircle } = useCircle();
+   // data.myShifts is already filtered to the active circle and sorted by
+   // start (AppProvider) — [0] is simply the next upcoming one.
+   const myShift = data.myShifts[0] ?? null;
+   const s = myShift; // start/end/purpose/coordinatorNote
+   const c = myShift?.context ?? null;
    const doneCount = data.tasks.filter((t) => t.doneAt).length;
    const [openTask, setOpenTask] = useState<PlanRow | null>(null);
 
@@ -1147,7 +1110,10 @@ function Caregiver() {
                <>
                   <section className="grid gap-6 lg:grid-cols-2">
                      <article className="glass rounded-3xl p-7">
-                        <p>From Fatima · {c?.mood && M[c.mood][1]}</p>
+                        {/* circles.name is always set equal to elder_name at
+                            creation (circles.ts's POST /circles) — activeCircle.name
+                            IS the elder's name, not a separate field. */}
+                        <p>From {activeCircle!.name} · {c?.mood && M[c.mood][1]}</p>
                         <Quote className="mt-8 text-[#54717a]" />
                         <p className="serif mt-3 text-3xl text-[#1f3740]">“{c?.noteHidden ? "She kept the details private." : c?.excerpt || "No note was shared for this shift."}”</p>
                      </article>
@@ -1174,7 +1140,6 @@ function Caregiver() {
             )}
             <Footer />
          </div>
-         <FileSidebar />
       </main>
    );
 }
@@ -1183,6 +1148,8 @@ function Caregiver() {
 
 function Family() {
    const { data, refreshTasks } = useApp();
+   const { activeCircle } = useCircle();
+   const cid = activeCircle!.id;
    const audio = useRef<HTMLAudioElement | null>(null);
    const [playing, setPlaying] = useState<string | null>(null);
    const [tab, setTab] = useState<"words" | "plan">("words");
@@ -1195,13 +1162,22 @@ function Family() {
       return () => window.clearInterval(iv);
    }, [refreshTasks]);
 
-   const play = (id: string, url: string) => {
+   // The checkin list no longer carries a ready-to-play audioUrl — audio_path
+   // is only ever exposed as a 120s signed URL, fetched on demand
+   // (GET /checkins/:id/audio), not embedded in every list response.
+   const play = async (id: string) => {
       if (playing === id) { audio.current?.pause(); setPlaying(null); return; }
       if (audio.current) audio.current.pause();
-      const a = new Audio(url);
-      audio.current = a;
-      a.onended = () => setPlaying(null);
-      a.play().then(() => setPlaying(id)).catch(() => setPlaying(null));
+      try {
+         const { url } = await api.checkinAudioUrl(cid, id);
+         const a = new Audio(url);
+         audio.current = a;
+         a.onended = () => setPlaying(null);
+         await a.play();
+         setPlaying(id);
+      } catch {
+         setPlaying(null);
+      }
    };
 
    const tabCls = (on: boolean) => `min-h-11 rounded-full px-4 text-sm font-medium transition ${on ? "bg-[#284c59] text-white" : "border border-[#789a9b]/50 bg-white/40 hover:bg-white/60"}`;
@@ -1224,11 +1200,16 @@ function Family() {
                            <p className="text-[#54717a]">{fmt(c.date)}</p>
                            <span className="mt-2 block">{c.mood ? <MoodTag mood={c.mood} size="sm" /> : <span className="text-sm text-[#54717a]">No mood shared</span>}</span>
                         </div>
-                        {c.access === "full" && !c.noteHidden && c.transcript ? (
+                        {/* RLS already did the visibility-tier filtering server-side
+                            (GET /checkins' checkin_content join returns null
+                            transcript/translation when this viewer isn't
+                            permitted) — a present transcript IS "not hidden,"
+                            there's no separate flag to check anymore. */}
+                        {c.transcript ? (
                            <div className="mt-4 md:mt-0">
                               <p className="serif text-2xl text-[#1f3740]">“{c.translation || c.transcript}”</p>
-                              {c.audioUrl && (
-                                 <button data-testid={`button-play-${c.id}`} onClick={() => play(c.id, audioSrc(c.audioUrl)!)} className="mt-4 min-h-11 rounded-full border border-[#789a9b]/50 px-4 hover:bg-white/40 transition">
+                              {c.hasAudio && (
+                                 <button data-testid={`button-play-${c.id}`} onClick={() => void play(c.id)} className="mt-4 min-h-11 rounded-full border border-[#789a9b]/50 px-4 hover:bg-white/40 transition">
                                     {playing === c.id ? <Volume2 className="mr-2 inline" size={17} /> : <Play className="mr-2 inline" size={17} />}
                                     {playing === c.id ? "Playing her words" : "Play her words"}
                                  </button>
@@ -1254,123 +1235,55 @@ function Family() {
             )}
             <Footer />
          </div>
-         <FileSidebar />
       </main>
    );
 }
 
 // ---------------------------------------------------------------------------
 
-function Login() {
-   const { session, signIn, signInAs } = useApp();
-   const [, setLocation] = useLocation();
-   const [username, setUsername] = useState("");
-   const [password, setPassword] = useState("");
-   const [busy, setBusy] = useState(false);
-   const [err, setErr] = useState<string | null>(null);
+// Login is gone — SignIn.tsx (magic-link only, Q1) replaces it entirely.
+// ResetKey is gone too — the hidden Ctrl+Shift+R demo-reset shortcut called
+// POST /api/demo/reset, which no longer exists server-side (Q4, confirmed:
+// remove rather than repoint to a "new demo circle" flow).
 
-   if (session) return <Redirect to={homeFor(session.user)} />;
-
-   const go = async (fn: () => Promise<User>) => {
-      setBusy(true); setErr(null);
-      try { const u = await fn(); setLocation(homeFor(u)); }
-      catch (e) {
-         if (e instanceof ApiError && e.status === 401) setErr("That name and password don’t match. Please try again.");
-         else if (e instanceof ApiError) setErr(e.message);
-         else setErr("Couldn’t reach the server. Is it running?");
-      }
-      finally { setBusy(false); }
-   };
-
-   const chips = [
-      { id: "elder-fatima", label: "Fatima" },
-      { id: "coord-yusuf", label: "Yusuf" },
-      { id: "cg-amina", label: "Amina" },
-      { id: "cg-lea", label: "Léa" },
-      { id: "fam-mona", label: "Mona" },
-   ];
-
+// Each role route is: RequireCircle (circle.tsx — session/notice/circle/role
+// gate) wrapping AppProvider (this file — role-specific data fetch) wrapping
+// RequireData (this file — holds the screen until that first fetch
+// resolves) wrapping the actual screen. Three distinct, single-purpose
+// gates, not one monolithic one — RequireRole used to do all of this
+// itself, which was exactly the case for TypeScript to lose track of
+// (session existing, matching role, AND data being loaded were nested
+// invariants a monolithic component just implicitly assumed rather than
+// declared step-by-step, harder to verify or extend than they need to be)
+function RoleRoute({ role, children }: { role: CircleRole; children: ReactNode }) {
    return (
-      <main className="ocean min-h-[100dvh] p-5 md:p-10 flex flex-col">
-         <div className="mx-auto flex-1 flex flex-col justify-center max-w-md w-full">
-            <div className="text-center mb-10 mt-8">
-               <div className="mx-auto grid h-16 w-16 place-items-center rounded-full border border-white/80 bg-white/45 font-semibold text-2xl shadow-sm mb-6 text-[#1f3740]">H</div>
-               <h1 className="serif text-5xl md:text-6xl text-[#1f3740]">Her Day</h1>
-               <p className="mt-4 text-lg text-[#42616a]">Sign in to your care circle.</p>
-            </div>
-
-            <form
-               onSubmit={(e) => { e.preventDefault(); void go(() => signIn(username, password)); }}
-               className="glass rounded-[28px] p-6 space-y-4"
-            >
-               <label className="block">
-                  <span className="text-sm font-semibold text-[#1f3740] block mb-1.5">Name</span>
-                  <input data-testid="input-username" value={username} onChange={(e) => { setUsername(e.target.value); setErr(null); }} autoComplete="username" placeholder="e.g. yusuf" className="w-full min-h-12 rounded-2xl border border-[#789a9b]/50 bg-white/60 px-4 text-[#1f3740] outline-none focus:border-[#284c59]" />
-               </label>
-               <label className="block">
-                  <span className="text-sm font-semibold text-[#1f3740] block mb-1.5">Password</span>
-                  <input data-testid="input-password" type="password" value={password} onChange={(e) => { setPassword(e.target.value); setErr(null); }} autoComplete="current-password" className="w-full min-h-12 rounded-2xl border border-[#789a9b]/50 bg-white/60 px-4 text-[#1f3740] outline-none focus:border-[#284c59]" />
-               </label>
-               {err && (
-                  <p role="alert" className="rounded-2xl border border-[#a23b2e]/40 bg-[#a23b2e]/10 px-4 py-3 text-sm text-[#8a2f24]">
-                     {err}
-                  </p>
-               )}
-               <button data-testid="button-signin" type="submit" disabled={busy || !username} className="w-full min-h-12 rounded-2xl bg-[#284c59] text-[#f7f5ed] transition hover:bg-[#1f3a44] disabled:opacity-50">
-                  {busy ? "Signing in…" : "Sign in"}
-               </button>
-            </form>
-
-            <div className="mt-6 text-center">
-               <p className="text-sm text-[#58767d] mb-3">Demo access</p>
-               <div className="flex flex-wrap justify-center gap-2">
-                  {chips.map((c) => (
-                     <button key={c.id} data-testid={`chip-${c.id}`} onClick={() => void go(() => signInAs(c.id))} disabled={busy} className="min-h-10 rounded-full border border-white/60 bg-white/30 px-4 text-sm hover:bg-white/55 transition disabled:opacity-50">
-                        {c.label}
-                     </button>
-                  ))}
-               </div>
-            </div>
-         </div>
-         <Footer />
-      </main>
+      <RequireCircle role={role}>
+         <AppProvider>
+            <RequireData>{children}</RequireData>
+         </AppProvider>
+      </RequireCircle>
    );
-}
-
-// ---------------------------------------------------------------------------
-
-function ResetKey() {
-   const { resetDemo, session } = useApp();
-   useEffect(() => {
-      const key = (e: KeyboardEvent) => {
-         if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "r") {
-            e.preventDefault();
-            if (session) void resetDemo();
-         }
-      };
-      window.addEventListener("keydown", key);
-      return () => window.removeEventListener("keydown", key);
-   }, [resetDemo, session]);
-   return null;
 }
 
 function App() {
    return (
-      <AppProvider>
-         <ResetKey />
+      <CircleProvider>
          <Switch>
-            <Route path="/" component={Login} />
-            <Route path="/elder"><RequireRole role="elder"><Elder /></RequireRole></Route>
-            <Route path="/coordinator"><RequireRole role="coordinator"><Coordinator /></RequireRole></Route>
-            <Route path="/caregiver"><RequireRole role="caregiver"><Caregiver /></RequireRole></Route>
-            <Route path="/family"><RequireRole role="family"><Family /></RequireRole></Route>
+            <Route path="/" component={SignIn} />
+            <Route path="/privacy-notice" component={PrivacyNotice} />
+            <Route path="/create-circle" component={CreateCircle} />
+            <Route path="/invite/:token" component={AcceptInvite} />
+            <Route path="/elder"><RoleRoute role="elder"><Elder /></RoleRoute></Route>
+            <Route path="/coordinator"><RoleRoute role="coordinator"><Coordinator /></RoleRoute></Route>
+            <Route path="/caregiver"><RoleRoute role="caregiver"><Caregiver /></RoleRoute></Route>
+            <Route path="/family"><RoleRoute role="family"><Family /></RoleRoute></Route>
             <Route>
                <main className="ocean min-h-screen p-6 grid place-items-center">
                   <p className="serif text-xl">Not found.</p>
                </main>
             </Route>
          </Switch>
-      </AppProvider>
+      </CircleProvider>
    );
 }
 

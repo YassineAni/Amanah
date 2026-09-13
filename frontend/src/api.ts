@@ -32,6 +32,16 @@ export type Profile = {
 
 export type CircleSummary = { id: string; name: string; role: CircleRole; isDemo: boolean };
 
+export type Circle = {
+  id: string;
+  orgId: string;
+  name: string;
+  elderUserId: string | null;
+  elderName: string;
+  elderLang: string;
+  timezone: string;
+};
+
 export type Member = { id: string; name: string; role: CircleRole; isFamilyMember: boolean };
 
 export type Shift = {
@@ -176,6 +186,12 @@ function mapCircleSummary(c: any): CircleSummary {
 function mapMember(m: any): Member {
   return { id: m.id, name: m.name, role: m.role, isFamilyMember: m.is_family_member };
 }
+function mapCircle(c: any): Circle {
+  return {
+    id: c.id, orgId: c.org_id, name: c.name, elderUserId: c.elder_user_id,
+    elderName: c.elder_name, elderLang: c.elder_lang, timezone: c.timezone,
+  };
+}
 function mapShift(s: any): Shift {
   return {
     id: s.id, caregiverId: s.caregiver_id, caregiverName: s.caregiver_name,
@@ -227,7 +243,7 @@ export const api = {
         elder_name: body.elderName, elder_lang: body.elderLang, timezone: body.timezone,
         attestation: body.attestation, org_id: body.orgId,
       }),
-    }).then((r) => r.circle),
+    }).then((r) => mapCircle(r.circle)),
   deleteCircle: (cid: string) => req<void>(`/api/circles/${cid}`, { method: "DELETE" }),
   members: (cid: string) => req<any[]>(`/api/circles/${cid}/members`).then((rows) => rows.map(mapMember)),
   removeMember: (cid: string, userId: string) =>
@@ -284,7 +300,8 @@ export const api = {
   deleteCheckin: (cid: string, id: string) =>
     req<void>(`/api/circles/${cid}/checkins/${id}`, { method: "DELETE" }),
   checkinAudioUrl: (cid: string, id: string) =>
-    req<{ url: string; expires_at: string }>(`/api/circles/${cid}/checkins/${id}/audio`),
+    req<{ url: string; expires_at: string }>(`/api/circles/${cid}/checkins/${id}/audio`)
+      .then((r) => ({ url: r.url, expiresAt: r.expires_at })),
 
   // --- coordinator writes ---
   updateShift: (cid: string, id: string, body: {
@@ -338,7 +355,3 @@ export const api = {
     return res.blob();
   },
 };
-
-/** Absolute URL for an audioUrl path returned by the API (for <audio src>). */
-export const audioSrc = (audioUrl: string | undefined | null) =>
-  audioUrl ? API_BASE + audioUrl : undefined;
