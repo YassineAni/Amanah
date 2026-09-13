@@ -4,6 +4,7 @@ import { requireCircle } from "../auth/circle.js";
 import { withAdminTxn, withUserTxn } from "../db/pool.js";
 import { asyncHandler } from "../http/asyncHandler.js";
 import { deleteCircleAudio } from "../storage/audio.js";
+import { logAudit } from "../audit.js";
 
 export const circlesRouter = Router();
 
@@ -91,6 +92,16 @@ circlesRouter.delete(
     );
     if (owns.rowCount === 0) return res.status(403).json({ error: "only the org owner can delete a circle" });
     await withAdminTxn((q) => q.query(`delete from public.circles where id = $1`, [cid]));
+    // Logged immediately after the DB delete succeeds, BEFORE
+    // deleteCircleAudio(cid) — that's a Storage HTTPS round-trip, and if it
+    // threw with the log call after it, a crash there would mean the
+    // circle is gone from Postgres but the deletion was never logged (a
+    // review flagged this exact ordering gap). circle_id has no FK
+    // constraint on audit_log by design (this record must survive the
+    // circle itself being gone, which already happened by this line) —
+    // sweepOrphans is the existing safety net for storage cleanup that
+    // fails, so there's no need to gate this log on Storage succeeding too.
+    await logAudit(claims.sub, "circle_delete", { circleId: cid });
     await deleteCircleAudio(cid);
     res.status(204).end();
   }),
@@ -130,6 +141,7 @@ circlesRouter.delete(
         ),
       );
       if (r.rowCount === 0) return res.status(404).json({ error: "no such active member" });
+      await logAudit(req.claims.sub, "member_remove", { circleId: req.params.cid, targetId: req.params.userId });
       res.status(204).end();
     } catch (e: any) {
       if (/last coordinator|organization owner/i.test(e.message)) {
