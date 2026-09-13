@@ -1,0 +1,64 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+
+concurrency: { group: deploy, cancel-in-progress: false }
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # Guard: without this, EVERY push to main starts failing the moment this
+    # workflow merges — `supabase link` against an empty SUPABASE_PROJECT_REF
+    # secret, before docs/deploy.md's one-time setup has even happened. Worse
+    # than nightly.yml's version of this same problem, since main gets pushed
+    # to on every merge, not once a day. docs/deploy.md step 10 sets this repo
+    # variable to 'true' only once the manual setup is actually done.
+    if: ${{ vars.DEPLOYED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with: { version: latest }
+      - run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+  api:
+    needs: migrate
+    runs-on: ubuntu-latest
+    if: ${{ vars.DEPLOYED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the latest stable release, not @master (the plan's draft,
+      # and this action's own README, both used @master — a floating branch
+      # ref that runs whatever the maintainer last pushed, unreviewed, with
+      # this job's FLY_API_TOKEN access). Every other action in this repo's
+      # workflows is already pinned to a version tag, never a branch;
+      # matching that convention here closes a real supply-chain gap a
+      # security review flagged. Bump deliberately if a newer flyctl
+      # feature is ever needed.
+      - uses: superfly/flyctl-actions/setup-flyctl@v1.5
+      - run: flyctl deploy --remote-only --config server/fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  frontend:
+    needs: migrate
+    runs-on: ubuntu-latest
+    if: ${{ vars.DEPLOYED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend run build
+        env:
+          VITE_API_BASE: https://amanah-api.fly.dev
+          VITE_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
+      # then: deploy frontend/dist with the static host's action (Vercel/CF Pages)
+      - run: echo "wire the static-host deploy action here per docs/deploy.md step 11"

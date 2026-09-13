@@ -40,6 +40,21 @@ test("invalid timezone -> 400", async () => {
   expect(res.status).toBe(400);
 });
 
+test("a valid IANA alias not in Intl.supportedValuesOf's own list is still accepted", async () => {
+  // Verified empirically (node -e) before this fix: Intl.supportedValuesOf
+  // ("timeZone") does not include "Asia/Kolkata" — only its older canonical
+  // form "Asia/Calcutta" — even though "Asia/Kolkata" is what a real
+  // browser/OS is exactly as likely to report (a genuine CLDR quirk, not a
+  // typo). The literal request body's timezone check used to reject this
+  // outright; canonicalizing via Intl.DateTimeFormat before the membership
+  // check (both resolve to "Asia/Calcutta") fixes it.
+  const jwt = await mintJwt({ sub: fx.users.A2_coordinator, email: "a2@example.com" });
+  const res = await request(createApp()).post("/api/circles").set(auth(jwt)).send({
+    elder_name: "X", elder_lang: "en", timezone: "Asia/Kolkata", attestation: true,
+  });
+  expect(res.status).toBe(201);
+});
+
 test("notice not accepted -> 403 notice_required", async () => {
   const jwt = await mintJwt({ sub: fx.users.A1_family, email: "f@example.com" });
   const res = await request(createApp()).post("/api/circles").set(auth(jwt)).send({

@@ -24,6 +24,12 @@ test("coordinator sees words on all tiers she recorded", async () => {
   // Date-serialized ISO timestamp (pg parses a bare `date` column as a JS
   // Date unless explicitly cast — see checkins.ts's occurred_on::text casts).
   expect(moodOnly.occurred_on).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  // regression guard: the SELECT previously omitted created_via entirely —
+  // the frontend maps this to Checkin.createdVia, which would silently be
+  // undefined at runtime with no typecheck error to catch it (found during
+  // 1c's frontend-plumbing review, same bug class as /my-shifts'
+  // coordinator_note).
+  expect(moodOnly.created_via).toBe("demo"); // fixture seeds addCheckin(...) with 'demo'
 });
 
 test("hired caregiver: mood_only row present but redacted", async () => {

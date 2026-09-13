@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "lucide-react": "^0.545.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",

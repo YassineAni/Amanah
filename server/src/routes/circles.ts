@@ -9,6 +9,23 @@ export const circlesRouter = Router();
 
 const TZ = new Set(Intl.supportedValuesOf("timeZone"));
 
+// A browser/OS can report a timezone name that's a valid IANA alias but not
+// itself in Intl.supportedValuesOf("timeZone")'s canonical list — verified
+// empirically: this Node's ICU data has "Asia/Kolkata" resolve to the
+// canonical "Asia/Calcutta" (a real CLDR quirk, kept for BCP-47 stability),
+// so `TZ.has("Asia/Kolkata")` is false even though it's a perfectly valid
+// zone. Canonicalizing via DateTimeFormat before the membership check
+// (rather than checking the raw input) closes that gap generally, not just
+// for this one example — any valid IANA name canonicalizes to something
+// TZ does contain, so this can only become more permissive, never less.
+function canonicalTimezone(input: string): string | null {
+  try {
+    return Intl.DateTimeFormat(undefined, { timeZone: input }).resolvedOptions().timeZone;
+  } catch {
+    return null; // not a real IANA zone at all
+  }
+}
+
 circlesRouter.post(
   "/circles",
   requireAuth,
@@ -18,9 +35,9 @@ circlesRouter.post(
     const b = req.body ?? {};
     const elderName = String(b.elder_name ?? "").trim().slice(0, 120);
     const elderLang = String(b.elder_lang ?? "ar").trim().slice(0, 12);
-    const timezone = String(b.timezone ?? "");
+    const timezone = canonicalTimezone(String(b.timezone ?? ""));
     if (!elderName) return res.status(400).json({ error: "elder_name required" });
-    if (!TZ.has(timezone)) return res.status(400).json({ error: "invalid IANA timezone" });
+    if (!timezone || !TZ.has(timezone)) return res.status(400).json({ error: "invalid IANA timezone" });
     if (b.attestation !== true) {
       return res.status(400).json({ error: "attestation of care authority is required" });
     }
@@ -76,6 +93,27 @@ circlesRouter.delete(
     await withAdminTxn((q) => q.query(`delete from public.circles where id = $1`, [cid]));
     await deleteCircleAudio(cid);
     res.status(204).end();
+  }),
+);
+
+// Closes a 1c gap: nothing in 1b let a client list a circle's roster
+// (GET /api/me only returns the caller's own circles, not who else is in
+// one) — the frontend's coordinator screen needs this for the
+// caregiver-assignment dropdown and family/caregiver labeling.
+circlesRouter.get(
+  "/circles/:cid/members",
+  requireAuth, requireCircle(),
+  asyncHandler<AuthedRequest>(async (req, res) => {
+    const rows = await withUserTxn(req.claims, (q) =>
+      q.query(
+        `select m.user_id as id, p.full_name as name, m.role, m.is_family_member
+         from public.circle_members m
+         join public.profiles p on p.id = m.user_id
+         where m.circle_id = $1 and m.removed_at is null
+         order by m.joined_at`, [req.params.cid],
+      ),
+    );
+    res.json(rows.rows);
   }),
 );
 

@@ -1,22 +1,48 @@
-// Typed client for the Her Day backend. One function per endpoint.
-// Every call attaches the Bearer token from session.ts.
+// Typed client for the Amanah API. One function per endpoint.
+// Every circle-scoped call takes a `cid` — the active circle's id (see
+// circle.tsx). Every call attaches the Bearer token from session.ts.
+//
+// Field-naming boundary: this file is where snake_case (what the 1c API
+// actually returns/expects on the wire) meets camelCase (what the rest of
+// the frontend already uses). All translation happens here, once, per
+// endpoint — components never see a raw API response.
 import { API_BASE } from "./config";
 import { getToken } from "./session";
 
-export type Role = "elder" | "coordinator" | "caregiver" | "family";
+export type CircleRole = "elder" | "coordinator" | "caregiver" | "family";
 export type Lang = "ar" | "fr" | "en";
 export type Mood = "good" | "ok" | "hard";
-export type Visibility = "circle" | "family" | "coordinator" | "mood-only";
+export type Visibility = "circle" | "family" | "coordinator" | "mood_only";
 export type Access = "full" | "mood" | "none";
+// Server enum: medication | personal_care | meal | rest | activity | other.
+// Kept snake_case here (not translated to "personal-care") deliberately —
+// it's used as an object key and <select> value throughout the app, not a
+// prose string, so a translation layer would just be one more place for a
+// silent typo to hide.
+export type TaskCategory = "medication" | "personal_care" | "meal" | "rest" | "activity" | "other";
 
-export type User = {
+export type Profile = {
   id: string;
-  name: string;
-  role: Role;
-  isFamily: boolean;
-  lang: Lang;
-  username: string;
+  email: string;
+  fullName: string;
+  uiLang: Lang;
+  tosAcceptedAt: string | null;
+  privacyNoticeVersion: string | null;
 };
+
+export type CircleSummary = { id: string; name: string; role: CircleRole; isDemo: boolean };
+
+export type Circle = {
+  id: string;
+  orgId: string;
+  name: string;
+  elderUserId: string | null;
+  elderName: string;
+  elderLang: string;
+  timezone: string;
+};
+
+export type Member = { id: string; name: string; role: CircleRole; isFamilyMember: boolean };
 
 export type Shift = {
   id: string;
@@ -27,20 +53,39 @@ export type Shift = {
   purpose: string;
   activityTags: string[];
   coordinatorNote?: string;
+  checkedInAt?: string | null;
+  checkedOutAt?: string | null;
+};
+
+export type ShiftContext = {
+  date: string | null;
+  mood: Mood | null;
+  excerpt: string | null;
+  noteHidden: boolean;
+};
+
+export type MyShift = {
+  id: string;
+  circleId: string;
+  circleName: string;
+  start: string;
+  end: string;
+  purpose: string;
+  coordinatorNote?: string;
+  context: ShiftContext;
 };
 
 export type Checkin = {
   id: string;
   date: string;
   createdVia?: "live" | "demo";
-  access: Access;
   mood: Mood | null;
-  noteHidden: boolean;
+  isProxy: boolean;
+  visibility: Visibility;
+  recordedByName: string;
   transcript?: string;
   translation?: string;
-  spokenLang?: Lang;
-  audioUrl?: string;
-  visibility?: Visibility;
+  hasAudio: boolean;
 };
 
 export type CareSignalDay = {
@@ -49,28 +94,17 @@ export type CareSignalDay = {
   isPast: boolean;
   mood: Mood | null;
   noteHidden: boolean;
-  checkinId: string | null;
+  checkinOn: boolean;
   shifts: { caregiverName: string | null; tags: string[] }[];
 };
 
 export type CareSignal = {
-  demoDate: string;
-  windowOffsets: number[];
+  window: string[];
   days: CareSignalDay[];
-  callout: string | null;
 };
 
-export type PrayerTimes = {
-  fajr: string;
-  dhuhr: string;
-  asr: string;
-  maghrib: string;
-  isha: string;
-};
-
-export type TaskCategory = "medication" | "personal-care" | "meal" | "rest" | "activity" | "other";
-
-/** the expanded per-day row the plan views render */
+/** the expanded per-day row the plan views render — already camelCase on
+ *  the wire (domain/plan.ts's PlanRow), no translation needed. */
 export type PlanRow = {
   key: string; // "r:<id>" | "a:<id>"
   kind: "routine" | "adhoc";
@@ -96,41 +130,15 @@ export type RoutineItem = {
   weekdays: number[]; // 0=Sun..6=Sat
 };
 
-export type FileCategory = "discharge" | "prescription" | "lab" | "imaging" | "care-plan" | "other";
-export type FileVisibility = "circle" | "family" | "coordinator";
-
-export type ClinicalFile = {
-  id: string;
-  name: string;
-  category: FileCategory;
-  visibility: FileVisibility;
-  uploadedById: string;
-  uploadedByName: string;
-  uploadedAt: string;
-  mime: string;
-  size: number;
-  seeded?: boolean;
-  scannedClean?: boolean;
-  canManage: boolean;
-};
-
-export type MyShift = {
-  shift: (Shift & { caregiverName: string }) | null;
-  context: {
-    date: string | null;
-    mood: Mood | null;
-    excerpt: string | null;
-    noteHidden: boolean;
-  } | null;
-};
-
 export type TranscribeResult = {
   transcript: string;
   translation: string;
   spokenLang: Lang;
-  audioId: string;
-  audioUrl: string;
+  /** null for the demo-utterance path (no real audio) */
+  stagingPath: string | null;
 };
+
+export type InviteInfo = { circleName: string; inviterName: string; role: CircleRole };
 
 export class ApiError extends Error {
   status: number;
@@ -164,91 +172,175 @@ function json(body: unknown): RequestInit {
   return { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-export const api = {
-  // --- auth ---
-  login: (creds: { username: string; password: string } | { userId: string }) =>
-    req<{ token: string; user: User }>("/api/auth/login", { method: "POST", ...json(creds) }),
-  session: () => req<{ user: User }>("/api/session"),
+// --- response shape mappers (snake_case wire -> camelCase app) ---
 
-  // --- reads ---
-  people: () => req<User[]>("/api/people"),
-  shifts: () => req<Shift[]>("/api/shifts"),
-  prayerTimes: () => req<PrayerTimes>("/api/prayer-times"),
-  checkins: () => req<Checkin[]>("/api/checkins"),
-  careSignal: () => req<CareSignal>("/api/care-signal"),
-  myShift: () => req<MyShift>("/api/my-shift"),
-  today: () =>
-    req<{ date: string; hasCheckin: boolean; prayerTimes: PrayerTimes; pastWindow: string[] }>(
-      "/api/today",
-    ),
+function mapProfile(p: any): Profile {
+  return {
+    id: p.id, email: p.email, fullName: p.full_name, uiLang: p.ui_lang,
+    tosAcceptedAt: p.tos_accepted_at, privacyNoticeVersion: p.privacy_notice_version,
+  };
+}
+function mapCircleSummary(c: any): CircleSummary {
+  return { id: c.id, name: c.name, role: c.role, isDemo: c.is_demo };
+}
+function mapMember(m: any): Member {
+  return { id: m.id, name: m.name, role: m.role, isFamilyMember: m.is_family_member };
+}
+function mapCircle(c: any): Circle {
+  return {
+    id: c.id, orgId: c.org_id, name: c.name, elderUserId: c.elder_user_id,
+    elderName: c.elder_name, elderLang: c.elder_lang, timezone: c.timezone,
+  };
+}
+function mapShift(s: any): Shift {
+  return {
+    id: s.id, caregiverId: s.caregiver_id, caregiverName: s.caregiver_name,
+    start: s.starts_at, end: s.ends_at, purpose: s.purpose, activityTags: s.activity_tags ?? [],
+    coordinatorNote: s.coordinator_note ?? undefined,
+    checkedInAt: s.checked_in_at, checkedOutAt: s.checked_out_at,
+  };
+}
+function mapContext(c: any): ShiftContext {
+  return { date: c.date, mood: c.mood, excerpt: c.excerpt, noteHidden: c.noteHidden };
+}
+function mapMyShift(s: any): MyShift {
+  return {
+    id: s.id, circleId: s.circle_id, circleName: s.circle_name,
+    start: s.starts_at, end: s.ends_at, purpose: s.purpose,
+    coordinatorNote: s.coordinator_note ?? undefined,
+    context: mapContext(s.context),
+  };
+}
+function mapCheckin(c: any): Checkin {
+  return {
+    id: c.id, date: c.occurred_on, createdVia: c.created_via, mood: c.mood,
+    isProxy: c.is_proxy, visibility: c.visibility, recordedByName: c.recorded_by_name,
+    transcript: c.transcript ?? undefined, translation: c.translation ?? undefined,
+    hasAudio: !!c.has_audio,
+  };
+}
+function mapRoutineItem(r: any): RoutineItem {
+  return {
+    id: r.id, title: r.title, time: r.time_of_day, category: r.category,
+    timeSensitive: r.time_sensitive, weekdays: r.weekdays,
+  };
+}
+function mapInvite(i: any): InviteInfo {
+  return { circleName: i.circle_name, inviterName: i.inviter_name, role: i.role };
+}
+
+export const api = {
+  // --- account / onboarding ---
+  me: () => req<{ profile: any; circles: any[] }>("/api/me").then((r) => ({
+    profile: mapProfile(r.profile), circles: r.circles.map(mapCircleSummary),
+  })),
+  acceptNotice: (version: string) =>
+    req<void>("/api/me/accept-notice", { method: "POST", ...json({ version }) }),
+  createCircle: (body: { elderName: string; elderLang: string; timezone: string; attestation: true; orgId?: string }) =>
+    req<{ circle: any }>("/api/circles", {
+      method: "POST",
+      ...json({
+        elder_name: body.elderName, elder_lang: body.elderLang, timezone: body.timezone,
+        attestation: body.attestation, org_id: body.orgId,
+      }),
+    }).then((r) => mapCircle(r.circle)),
+  deleteCircle: (cid: string) => req<void>(`/api/circles/${cid}`, { method: "DELETE" }),
+  members: (cid: string) => req<any[]>(`/api/circles/${cid}/members`).then((rows) => rows.map(mapMember)),
+  removeMember: (cid: string, userId: string) =>
+    req<void>(`/api/circles/${cid}/members/${userId}`, { method: "DELETE" }),
+
+  // --- invites ---
+  createInvites: (cid: string, invites: { email: string; role: CircleRole; isFamilyMember?: boolean }[]) =>
+    req<{ invites: { id: string; email: string; role: CircleRole }[] }>(`/api/circles/${cid}/invites`, {
+      method: "POST",
+      ...json({ invites: invites.map((i) => ({ email: i.email, role: i.role, is_family_member: i.isFamilyMember })) }),
+    }),
+  getInvite: (token: string) => req<any>(`/api/invites/${token}`).then(mapInvite),
+  acceptInvite: (token: string) =>
+    req<{ circle_id: string }>(`/api/invites/${token}/accept`, { method: "POST" }).then((r) => r.circle_id),
+
+  // --- reads (all circle-scoped) ---
+  shifts: (cid: string, range?: { from: string; to: string }) => {
+    const qs = range ? `?from=${range.from}&to=${range.to}` : "";
+    return req<any[]>(`/api/circles/${cid}/shifts${qs}`).then((rows) => rows.map(mapShift));
+  },
+  checkins: (cid: string) => req<any[]>(`/api/circles/${cid}/checkins`).then((rows) => rows.map(mapCheckin)),
+  careSignal: (cid: string) => req<CareSignal>(`/api/circles/${cid}/care-signal`),
+  myShifts: () => req<{ shifts: any[] }>("/api/my-shifts").then((r) => r.shifts.map(mapMyShift)),
+  today: (cid: string) => req<{ today: string; has_checkin: boolean; last_mood: Mood | null }>(
+    `/api/circles/${cid}/today`,
+  ).then((r) => ({ date: r.today, hasCheckin: r.has_checkin, lastMood: r.last_mood })),
 
   // --- elder writes ---
-  transcribe: (input: Blob | { demoUtteranceId: string }, spokenLang: Lang = "ar") => {
+  transcribe: (cid: string, input: Blob | { demoUtteranceId: string }, spokenLang: Lang = "ar") => {
     const fd = new FormData();
     if (input instanceof Blob) fd.append("audio", input, "checkin.webm");
     else fd.append("demoUtteranceId", input.demoUtteranceId);
-    fd.append("spokenLang", spokenLang);
-    return req<TranscribeResult>("/api/transcribe", { method: "POST", body: fd });
+    fd.append("spoken_lang", spokenLang);
+    return req<any>(`/api/circles/${cid}/checkins/transcribe`, { method: "POST", body: fd }).then((r) => ({
+      transcript: r.transcript, translation: r.translation, spokenLang: r.spoken_lang,
+      stagingPath: r.staging_path,
+    }) as TranscribeResult);
   },
-  createCheckin: (body: {
-    date?: string;
-    mood: Mood;
-    transcript: string;
-    translation?: string;
-    audioId?: string;
-    spokenLang?: Lang;
-    visibility?: Visibility;
-    createdVia?: "live" | "demo";
-  }) => req<Checkin>("/api/checkins", { method: "POST", ...json(body) }),
-  setVisibility: (id: string, visibility: Visibility) =>
-    req<Checkin>(`/api/checkins/${id}/visibility`, { method: "PATCH", ...json({ visibility }) }),
+  demoUtterances: (cid: string) => req<{ id: string; label: string }[]>(`/api/circles/${cid}/demo/utterances`),
+  createCheckin: (cid: string, body: {
+    occurredOn?: string; mood: Mood; transcript: string; translation?: string;
+    stagingPath?: string | null; visibility?: Visibility;
+  }) => req<{ id: string }>(`/api/circles/${cid}/checkins`, {
+    method: "POST",
+    ...json({
+      occurred_on: body.occurredOn, mood: body.mood, transcript: body.transcript,
+      translation: body.translation, staging_path: body.stagingPath, visibility: body.visibility,
+    }),
+  }),
+  setVisibility: (cid: string, id: string, visibility: Visibility) =>
+    req<{ id: string; visibility: Visibility }>(`/api/circles/${cid}/checkins/${id}`, {
+      method: "PATCH", ...json({ visibility }),
+    }),
+  deleteCheckin: (cid: string, id: string) =>
+    req<void>(`/api/circles/${cid}/checkins/${id}`, { method: "DELETE" }),
+  checkinAudioUrl: (cid: string, id: string) =>
+    req<{ url: string; expires_at: string }>(`/api/circles/${cid}/checkins/${id}/audio`)
+      .then((r) => ({ url: r.url, expiresAt: r.expires_at })),
 
   // --- coordinator writes ---
-  updateShift: (
-    id: string,
-    body: { caregiverId?: string | null; activityTags?: string[]; coordinatorNote?: string },
-  ) => req<Shift>(`/api/shifts/${id}`, { method: "PATCH", ...json(body) }),
+  updateShift: (cid: string, id: string, body: {
+    caregiverId?: string | null; activityTags?: string[]; coordinatorNote?: string;
+    checkedInAt?: string | null; checkedOutAt?: string | null;
+  }) => req<{ id: string }>(`/api/circles/${cid}/shifts/${id}`, {
+    method: "PATCH",
+    ...json({
+      caregiver_id: body.caregiverId, activity_tags: body.activityTags,
+      coordinator_note: body.coordinatorNote,
+      checked_in_at: body.checkedInAt, checked_out_at: body.checkedOutAt,
+    }),
+  }),
 
   // --- care plan (weekly routine + per-day view) ---
-  tasks: (date?: string) =>
-    req<{ date: string; tasks: PlanRow[] }>(`/api/tasks${date ? `?date=${date}` : ""}`),
-  toggleTask: (body: { date: string; key: string; done: boolean; note?: string }) =>
-    req<{ date: string; tasks: PlanRow[] }>("/api/tasks/toggle", { method: "PATCH", ...json(body) }),
-  addAdHoc: (body: { date: string; title: string; time: string; category: TaskCategory; timeSensitive: boolean; note?: string }) =>
-    req<{ date: string; tasks: PlanRow[] }>("/api/tasks/adhoc", { method: "POST", ...json(body) }),
-  deleteAdHoc: (id: string) => req<{ ok: true }>(`/api/tasks/adhoc/${id}`, { method: "DELETE" }),
-  routine: () => req<RoutineItem[]>("/api/routine"),
-  addRoutine: (body: { title: string; time: string; category: TaskCategory; timeSensitive: boolean; weekdays: number[] }) =>
-    req<RoutineItem>("/api/routine", { method: "POST", ...json(body) }),
-  updateRoutine: (id: string, body: Partial<Omit<RoutineItem, "id">>) =>
-    req<RoutineItem>(`/api/routine/${id}`, { method: "PATCH", ...json(body) }),
-  deleteRoutine: (id: string) => req<{ ok: true }>(`/api/routine/${id}`, { method: "DELETE" }),
+  tasks: (cid: string, date?: string) =>
+    req<{ date: string; tasks: PlanRow[] }>(`/api/circles/${cid}/plan${date ? `?date=${date}` : ""}`),
+  toggleTask: (cid: string, body: { date: string; key: string; done: boolean; note?: string }) =>
+    req<{ date: string; tasks: PlanRow[] }>(`/api/circles/${cid}/plan/toggle`, { method: "PATCH", ...json(body) }),
+  addAdHoc: (cid: string, body: { date: string; title: string; time: string; category: TaskCategory; timeSensitive: boolean; note?: string }) =>
+    req<{ date: string; tasks: PlanRow[] }>(`/api/circles/${cid}/adhoc`, {
+      method: "POST",
+      ...json({ date: body.date, title: body.title, time: body.time, category: body.category, time_sensitive: body.timeSensitive, note: body.note }),
+    }),
+  deleteAdHoc: (cid: string, id: string) => req<void>(`/api/circles/${cid}/adhoc/${id}`, { method: "DELETE" }),
+  routine: (cid: string) => req<any[]>(`/api/circles/${cid}/routine`).then((rows) => rows.map(mapRoutineItem)),
+  addRoutine: (cid: string, body: { title: string; time: string; category: TaskCategory; timeSensitive: boolean; weekdays: number[] }) =>
+    req<any>(`/api/circles/${cid}/routine`, {
+      method: "POST",
+      ...json({ title: body.title, time: body.time, category: body.category, time_sensitive: body.timeSensitive, weekdays: body.weekdays }),
+    }).then(mapRoutineItem),
+  updateRoutine: (cid: string, id: string, body: Partial<Omit<RoutineItem, "id">>) =>
+    req<any>(`/api/circles/${cid}/routine/${id}`, {
+      method: "PATCH",
+      ...json({ title: body.title, time: body.time, category: body.category, time_sensitive: body.timeSensitive, weekdays: body.weekdays }),
+    }).then(mapRoutineItem),
+  deleteRoutine: (cid: string, id: string) => req<void>(`/api/circles/${cid}/routine/${id}`, { method: "DELETE" }),
 
-  // --- clinical files ---
-  files: () => req<{ files: ClinicalFile[]; canUpload: boolean }>("/api/files"),
-  uploadFile: (file: File, meta: { name: string; category: FileCategory; visibility: FileVisibility }) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("name", meta.name);
-    fd.append("category", meta.category);
-    fd.append("visibility", meta.visibility);
-    return req<ClinicalFile>("/api/files", { method: "POST", body: fd });
-  },
-  updateFile: (id: string, meta: Partial<{ name: string; category: FileCategory; visibility: FileVisibility }>) =>
-    req<ClinicalFile>(`/api/files/${id}`, { method: "PATCH", ...json(meta) }),
-  deleteFile: (id: string) => req<{ ok: true }>(`/api/files/${id}`, { method: "DELETE" }),
-  downloadFile: async (id: string): Promise<Blob> => {
-    const token = getToken();
-    const res = await fetch(API_BASE + `/api/files/${id}/download`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) throw new ApiError(res.status, "download failed");
-    return res.blob();
-  },
-
-  // --- demo / tts ---
-  resetDemo: () => req<{ ok: true }>("/api/demo/reset", { method: "POST" }),
-  demoUtterances: () => req<{ id: string; label: string }[]>("/api/demo/utterances"),
+  // --- tts ---
   tts: async (text: string, lang: Lang): Promise<Blob> => {
     const token = getToken();
     const res = await fetch(API_BASE + "/api/tts", {
@@ -263,7 +355,3 @@ export const api = {
     return res.blob();
   },
 };
-
-/** Absolute URL for an audioUrl path returned by the API (for <audio src>). */
-export const audioSrc = (audioUrl: string | undefined | null) =>
-  audioUrl ? API_BASE + audioUrl : undefined;

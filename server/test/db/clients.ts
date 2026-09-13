@@ -25,13 +25,22 @@ const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
 const ANON_KEY_FALLBACK =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlLWRlbW8iLCJpYXQiOjE2NDE3NjkyMDAsImV4cCI6MTc5OTUzNTYwMH0.dc_X5iR_VP_qT0zsiyj_I_OZ2T9FtRU2BBNWN8Bu4GE";
 
-function resolveAnonKey(): string {
-  try {
-    const env = execSync("npx supabase status -o env", {
+// Cached: resolveAnonKey() and resolveServiceRoleKey() each need this output;
+// without caching, module load spawned the CLI twice for no reason.
+let cachedStatusEnv: string | null = null;
+function statusEnv(): string {
+  if (cachedStatusEnv === null) {
+    cachedStatusEnv = execSync("npx supabase status -o env", {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const m = env.match(/ANON_KEY="?([^"\r\n]+)"?/);
+  }
+  return cachedStatusEnv;
+}
+
+function resolveAnonKey(): string {
+  try {
+    const m = statusEnv().match(/ANON_KEY="?([^"\r\n]+)"?/);
     const key = m?.[1]?.trim();
     return key && key.length > 0 ? key : ANON_KEY_FALLBACK;
   } catch {
@@ -40,6 +49,41 @@ function resolveAnonKey(): string {
 }
 
 export const ANON_KEY = resolveAnonKey();
+
+// The service-role key is a per-project signed JWT, NOT a static demo
+// constant like the anon key — there is no safe fallback for it. Real
+// storage.audio.ts calls (Part 1c) authenticate to the local Storage
+// container with this key; the placeholder string setup-env.ts used to
+// inject ("test-service-role-key") 401s at the first store().upload(),
+// so this resolves the real key the same way resolveAnonKey() does.
+function resolveServiceRoleKey(): string {
+  // Unlike resolveAnonKey(), there's no safe fallback to fall back to — so
+  // this must throw a clear diagnostic rather than let a raw subprocess
+  // error surface. statusEnv() itself is a bare execSync with no try/catch
+  // of its own: if the stack isn't running, `npx supabase status` exits
+  // non-zero and execSync throws immediately, well before the `if (!key)`
+  // check below could ever run — so that check alone was unreachable in
+  // the actual likely failure mode. Wrapping the call, not just the
+  // parse, is what makes the friendly message actually fire.
+  let env: string;
+  try {
+    env = statusEnv();
+  } catch {
+    throw new Error(
+      "could not run `npx supabase status -o env` to resolve SERVICE_ROLE_KEY — is the local stack running (`npx supabase start`)?",
+    );
+  }
+  const m = env.match(/SERVICE_ROLE_KEY="?([^"\r\n]+)"?/);
+  const key = m?.[1]?.trim();
+  if (!key) {
+    throw new Error(
+      "`npx supabase status -o env` ran but had no SERVICE_ROLE_KEY in its output — is the local stack running (`npx supabase start`)?",
+    );
+  }
+  return key;
+}
+
+export const SERVICE_ROLE_KEY = resolveServiceRoleKey();
 
 export function admin(): Client {
   return new Client({ connectionString: ADMIN_URL });

@@ -8,11 +8,15 @@
 // place that would need to change if config.toml's ports were ever forked
 // per-environment, and src/config.ts keeps the plan's literal default-port
 // fallbacks (used only if this setup file is bypassed).
-import { ADMIN_URL, API_URL, APP_URL, JWT_SECRET_STRING } from "./db/clients.js";
+import { ADMIN_URL, API_URL, APP_URL, JWT_SECRET_STRING, SERVICE_ROLE_KEY } from "./db/clients.js";
 
 process.env.NODE_ENV ??= "test";
 process.env.DATABASE_URL ??= APP_URL;
 process.env.DATABASE_URL_ADMIN ??= ADMIN_URL;
 process.env.SUPABASE_URL ??= API_URL;
 process.env.SUPABASE_JWT_SECRET ??= JWT_SECRET_STRING;
-process.env.SUPABASE_SERVICE_ROLE_KEY ??= "test-service-role-key";
+// A real per-project key, resolved from `supabase status` (see clients.ts) —
+// not a placeholder. server/src/storage/audio.ts (Part 1c) authenticates
+// to the local Storage container with this key via supabaseAdmin; a fake
+// string 401s at the first upload() instead of failing at import time.
+process.env.SUPABASE_SERVICE_ROLE_KEY ??= SERVICE_ROLE_KEY;

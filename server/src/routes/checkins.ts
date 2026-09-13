@@ -17,6 +17,7 @@ checkinsRouter.get("/checkins", asyncHandler<AuthedRequest>(async (req, res) => 
   const rows = await withUserTxn(req.claims, (q) =>
     q.query(
       `select c.id, c.occurred_on::text, c.mood, c.spoken_lang, c.is_proxy, c.visibility,
+              c.created_via,
               p.full_name as recorded_by_name,
               cc.transcript, cc.translation,
               (cc.audio_path is not null) as has_audio
@@ -120,9 +121,15 @@ checkinsRouter.post("/checkins", asyncHandler<AuthedRequest>(async (req, res) =>
   if (stagingPath && !STAGING_PATH.test(stagingPath)) {
     return res.status(400).json({ error: "staging_path does not belong to this circle" });
   }
+  // promoteStaging is a Storage network round-trip (copy + remove), not a
+  // DB call — do it before opening the transaction, not inside it. Holding
+  // one of appPool's 10 connections open across an outbound HTTP call to
+  // Storage ties up a scarce resource for network-bound work that has
+  // nothing to do with the transaction. If the txn below fails/rolls back
+  // after this succeeds, the promoted object becomes an unreferenced
+  // orphan — exactly what sweepOrphans exists to clean up, not a leak.
+  const audioPath: string | null = stagingPath ? await promoteStaging(stagingPath) : null;
   const out = await withUserTxn(claims, async (q) => {
-    let audioPath: string | null = null;
-    if (stagingPath) audioPath = await promoteStaging(stagingPath);
     const circle = (await q.query(
       `select to_char((now() at time zone c.timezone)::date, 'YYYY-MM-DD') as today, c.elder_lang
        from public.circles c where c.id = $1`, [cid])).rows[0];
