@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Redirect, useLocation } from "wouter";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { homeFor, useCircle } from "../circle";
 
 // Shown when a signed-in, notice-accepted user has zero circles (Q6,
@@ -9,6 +9,26 @@ import { homeFor, useCircle } from "../circle";
 export function CreateCircle() {
   const { activeCircle, refresh } = useCircle();
   const [, setLocation] = useLocation();
+  // All hooks declared before any early return below — this screen used to
+  // call useState() only on the branch where activeCircle was still falsy,
+  // which crashes ("Rendered fewer hooks than expected") the moment
+  // activeCircle flips truthy mid-render, e.g. right after a successful
+  // submit()'s own refresh() resolves and this component briefly re-renders
+  // before setLocation() navigates it away.
+  const [elderName, setElderName] = useState("");
+  const [elderLang, setElderLang] = useState<"ar" | "en" | "fr">("ar");
+  const [attest, setAttest] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Set only on the server's 403 notice_required — see submit()'s catch.
+  // This screen isn't wrapped in RequireCircle (circle.tsx's own comment
+  // explains why: avoiding a redirect loop against /privacy-notice itself),
+  // so nothing upstream guarantees the notice was accepted before a signed-
+  // in user reaches it directly (e.g. a stale bookmark, or — the actual bug
+  // this fixed — SignIn.tsx sending a fresh signee here without checking
+  // first). Without this, the user just saw the server's raw error message
+  // sitting on a form that has nothing to do with fixing it.
+  const [needsNotice, setNeedsNotice] = useState(false);
 
   // Guard against re-entry once a circle already exists — this screen is
   // reachable via a stale link/back-button, and without this the form would
@@ -19,11 +39,7 @@ export function CreateCircle() {
   // on a screen that redirects to their OLD circle's role, not the one they
   // just made.
   if (activeCircle) return <Redirect to={homeFor(activeCircle.role)} />;
-  const [elderName, setElderName] = useState("");
-  const [elderLang, setElderLang] = useState<"ar" | "en" | "fr">("ar");
-  const [attest, setAttest] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  if (needsNotice) return <Redirect to="/privacy-notice" />;
 
   // Auto-detected, not asked — the coordinator creating a circle is almost
   // always in the same timezone as the elder for a family pilot, and a
@@ -43,6 +59,7 @@ export function CreateCircle() {
       await refresh();
       setLocation("/coordinator"); // creating a circle always makes you its coordinator
     } catch (e) {
+      if (e instanceof ApiError && e.code === "notice_required") { setNeedsNotice(true); return; }
       setErr(e instanceof Error ? e.message : "Couldn’t create the circle — please try again.");
     } finally {
       setBusy(false);

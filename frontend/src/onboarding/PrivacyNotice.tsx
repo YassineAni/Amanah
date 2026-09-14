@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Redirect } from "wouter";
 import { api } from "../api";
-import { homeFor, useCircle, PRIVACY_NOTICE_VERSION } from "../circle";
+import { homeFor, noticeAccepted, useCircle, PRIVACY_NOTICE_VERSION } from "../circle";
 
 // Re-exported, not defined here: RequireCircle (circle.tsx) needs this
 // constant too, and this file already imports useCircle from there — defining
@@ -57,7 +57,7 @@ export function PrivacyNotice() {
   // so this could actually create a second circle. Mirrors SignIn.tsx's
   // branch instead: an existing circle sends you to its role's home, not
   // back through circle creation.
-  if (profile && profile.privacyNoticeVersion === PRIVACY_NOTICE_VERSION && profile.tosAcceptedAt) {
+  if (noticeAccepted(profile)) {
     return <Redirect to={activeCircle ? homeFor(activeCircle.role) : "/create-circle"} />;
   }
 
